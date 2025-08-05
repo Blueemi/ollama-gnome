@@ -82,6 +82,27 @@ def add_chat_css():
         Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
     )
 
+def markdown_to_markup(text):
+    """Convert basic markdown to Pango markup"""
+    import re
+
+    # Escape existing markup
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+    # Code blocks (```code```)
+    text = re.sub(r'```([^`]+)```', r'<span font_family="monospace" background="#f5f5f5" foreground="#333333">\1</span>', text, flags=re.DOTALL)
+
+    # Inline code (`code`)
+    text = re.sub(r'`([^`]+)`', r'<span font_family="monospace" background="#f5f5f5" foreground="#333333">\1</span>', text)
+
+    # Bold (**text**)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', text)
+
+    # Italic (*text*)
+    text = re.sub(r'\*([^*]+)\*', r'<i>\1</i>', text)
+
+    return text
+
 def add_chat_css():
     css = b"""
     .chat-bubble-user {
@@ -196,6 +217,15 @@ class MainWindow(Gtk.Window):
 
         # Automatically load models from models.json and populate model picker
         models_path = os.path.join(CONFIG_DIR, "models.json")
+        settings_path = os.path.join(CONFIG_DIR, "settings.json")
+        last_model = None
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    settings = json.load(f)
+                last_model = settings.get("model", None)
+            except Exception as e:
+                print(f"Error loading settings.json: {e}")
         if os.path.exists(models_path):
             try:
                 with open(models_path, "r", encoding="utf-8") as f:
@@ -203,10 +233,10 @@ class MainWindow(Gtk.Window):
                 self.model_store_settings.clear()
                 for m in models:
                     self.model_store_settings.append([m])
-                if models:
-                    self.combo_model_settings.set_active(0)
             except Exception as e:
                 print(f"Error loading models.json: {e}")
+        # Store last model to set later when UI is ready
+        self._last_model_to_set = last_model
 
         # Settings view
         self.settings_page = self._build_settings_page()
@@ -251,11 +281,17 @@ class MainWindow(Gtk.Window):
         # Apply saved accent color (if any)
         self._apply_accent_color(self.settings.get("accent_color", "blue"))
 
-        # Restore saved model to the chat picker (if already present in settings)
-        saved_model = self.settings.get("model", "")
-        if saved_model and hasattr(self, "model_store"):
-            self.model_store.append([saved_model])
-            self.combo_model.set_active(0)
+        # Set last picked model from settings.json after UI is fully built
+        if hasattr(self, '_last_model_to_set') and self._last_model_to_set:
+            GLib.idle_add(self._set_model_picker_text, self._last_model_to_set)
+
+    def _set_model_picker_text(self, model_name):
+        """Set the model picker entry text to the specified model name"""
+        if hasattr(self, "combo_model") and self.combo_model:
+            entry = self.combo_model.get_child()
+            if entry:
+                entry.set_text(model_name)
+        return False  # Remove from GLib.idle_add queue
 
     def _build_accel_group(self):
         accel_group = Gtk.AccelGroup()
@@ -586,7 +622,9 @@ class MainWindow(Gtk.Window):
         bubble_label.set_line_wrap(True)
         bubble_label.set_line_wrap_mode(Gtk.WrapMode.CHAR)
         bubble_label.set_selectable(True)
-        bubble_label.set_text(text)
+        # Convert markdown to Pango markup and set
+        markup_text = markdown_to_markup(text)
+        bubble_label.set_markup(markup_text)
         bubble_label.set_max_width_chars(80)
         bubble_label.set_width_chars(80)
         bubble_label.set_xalign(0)
@@ -909,7 +947,21 @@ class MainWindow(Gtk.Window):
         for m in models:
             self.model_store.append([m])
         if len(models) > 0:
-            self.combo_model.set_active(0)
+            # Set entry text to last used model from settings.json if available
+            settings_path = os.path.join(CONFIG_DIR, "settings.json")
+            last_model = None
+            if os.path.exists(settings_path):
+                try:
+                    with open(settings_path, "r", encoding="utf-8") as f:
+                        settings = json.load(f)
+                    last_model = settings.get("model", None)
+                except Exception as e:
+                    print(f"Error loading settings.json: {e}")
+            entry = self.combo_model.get_child()
+            if entry and last_model:
+                entry.set_text(last_model)
+            else:
+                self.combo_model.set_active(0)
 
     def set_info(self, text):
         if hasattr(self, "info_label") and self.info_label:
