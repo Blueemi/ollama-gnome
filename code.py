@@ -34,7 +34,7 @@ from gi.repository import Gtk, Gio, GLib, Gdk
 import requests
 
 APP_NAME = "OpenAI-compatible Client"
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "openai_gtk_client")
+CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "ollama_gui")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "settings.json")
 
 
