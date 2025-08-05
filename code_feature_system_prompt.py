@@ -573,24 +573,10 @@ class MainWindow(Gtk.Window):
         btn_fetch_models.set_tooltip_text("Fetch models")
         btn_fetch_models.connect("clicked", self.on_fetch_models_clicked)
 
-        # Text entry for chat (multi-line)
-        self.entry_chat_buffer = Gtk.TextBuffer()
-        self.entry_chat_view = Gtk.TextView(buffer=self.entry_chat_buffer)
-        self.entry_chat_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.entry_chat_view.set_size_request(-1, 36)
-        self.entry_chat_view.set_pixels_above_lines(2)
-        self.entry_chat_view.set_pixels_below_lines(2)
-        self.entry_chat_view.set_left_margin(12)
-        self.entry_chat_view.set_right_margin(12)
-        self.entry_chat_view.set_justification(Gtk.Justification.LEFT)
-        self.entry_chat_view.set_property("halign", Gtk.Align.FILL)
-        self.entry_chat_view.set_property("valign", Gtk.Align.CENTER)
-        entry_scroll = Gtk.ScrolledWindow()
-        entry_scroll.set_hexpand(True)
-        entry_scroll.set_vexpand(False)
-        entry_scroll.set_min_content_height(36)
-        entry_scroll.set_max_content_height(60)
-        entry_scroll.add(self.entry_chat_view)
+        # Text entry for chat (single-line, GNOME look)
+        self.entry_chat = Gtk.Entry()
+        self.entry_chat.set_hexpand(True)
+        self.entry_chat.set_placeholder_text("Type your message here")
 
         # Send button
         self.btn_send = Gtk.Button.new_from_icon_name("mail-send-symbolic", Gtk.IconSize.BUTTON)
@@ -606,12 +592,12 @@ class MainWindow(Gtk.Window):
         # Pack input row
         input_row.pack_start(self.combo_model, False, False, 0)
         input_row.pack_start(btn_fetch_models, False, False, 0)
-        input_row.pack_start(entry_scroll, True, True, 0)
+        input_row.pack_start(self.entry_chat, True, True, 0)
         input_row.pack_end(self.btn_send, False, False, 0)
 
         vbox.pack_end(input_row, False, False, 0)
         # Connect Enter key to send message
-        self.entry_chat_view.connect("key-press-event", self._on_entry_keypress)
+        self.entry_chat.connect("activate", self.on_send_clicked)
         return vbox
 
     def _append_bubble(self, role, text):
@@ -677,19 +663,14 @@ class MainWindow(Gtk.Window):
         grid.attach(self.entry_url, 1, row, 2, 1)
         row += 1
 
-        # System prompt field
+        # System prompt field (now uses Gtk.Entry for GNOME look)
         lbl_system = Gtk.Label(label="System Prompt:", xalign=0)
         grid.attach(lbl_system, 0, row, 1, 1)
-        self.entry_system = Gtk.TextView()
-        self.entry_system.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.entry_system.set_size_request(-1, 120)
-        self.entry_system_buffer = self.entry_system.get_buffer()
-        self.entry_system_buffer.set_text(self.settings.get("system_prompt", ""))
-        system_scroll = Gtk.ScrolledWindow()
-        system_scroll.set_hexpand(True)
-        system_scroll.set_vexpand(False)
-        system_scroll.add(self.entry_system)
-        grid.attach(system_scroll, 1, row, 2, 1)
+        self.entry_system = Gtk.Entry()
+        self.entry_system.set_hexpand(True)
+        self.entry_system.set_placeholder_text("Enter system prompt here")
+        self.entry_system.set_text(self.settings.get("system_prompt", ""))
+        grid.attach(self.entry_system, 1, row, 2, 1)
         row += 1
 
         # Model picker removed from settings tab
@@ -1007,14 +988,13 @@ class MainWindow(Gtk.Window):
             self.set_info("Please select or enter a model")
             return
 
-        start, end = self.entry_chat_buffer.get_bounds()
-        user_text = self.entry_chat_buffer.get_text(start, end, True).strip()
+        user_text = self.entry_chat.get_text().strip()
         if not user_text:
             self.set_info("Please enter a message")
             return
 
         self._append_bubble(role="user", text=user_text)
-        self.entry_chat_buffer.set_text("")
+        self.entry_chat.set_text("")
         # Save last chosen model to settings.json using settings combo
         settings_path = os.path.join(CONFIG_DIR, "settings.json")
         try:
@@ -1067,10 +1047,16 @@ class MainWindow(Gtk.Window):
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
+        # Build user message with system prompt prepended if available
+        system_prompt = self.settings.get("system_prompt", "").strip()
+        user_content = prompt
+        if system_prompt:
+            user_content = system_prompt + "\n\n" + prompt
+
         payload = {
             "model": model,
             "messages": [
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": user_content}
             ],
             "temperature": 0.7,
         }
