@@ -121,6 +121,8 @@ class MainWindow(Gtk.Window):
 
         # Follow GNOME dark/light mode and style
         self._apply_gnome_style()
+        # Apply saved accent color (if any)
+        self._apply_accent_color(self.settings.get("accent_color", "blue"))
 
         # Restore saved model to the chat picker (if already present in settings)
         saved_model = self.settings.get("model", "")
@@ -186,6 +188,7 @@ class MainWindow(Gtk.Window):
             pass
 
         # Minimal CSS: spacing and radius only, no custom colors so theme can decide.
+        # Minimal CSS: spacing and radius only, plus dynamic accent hooks.
         css = b"""
         .chat-container { padding: 12px; }
         .bubble-user, .bubble-assistant, .bubble-system {
@@ -198,11 +201,160 @@ class MainWindow(Gtk.Window):
         .bubble-assistant { margin-right: 48px; }
         .bubble-system { margin-left: 96px; margin-right: 96px; }
         .input-row { padding: 8px; }
+        /* Accent: fully override theme painting for buttons and StackSwitcher toggle buttons */
+        /* Button accents (apply to GtkButton across states and its contents) */
+        button.accent-blue,
+        button.accent-blue:focus,
+        button.accent-blue:hover,
+        button.accent-blue:active,
+        button.accent-blue:checked {
+            background-color: #1c71d8;
+            color: #ffffff;
+            background-image: none;
+            border-image: none;
+            box-shadow: none;
+        }
+        button.accent-red,
+        button.accent-red:focus,
+        button.accent-red:hover,
+        button.accent-red:active,
+        button.accent-red:checked {
+            background-color: #c01c28;
+            color: #ffffff;
+            background-image: none;
+            border-image: none;
+            box-shadow: none;
+        }
+        button.accent-black,
+        button.accent-black:focus,
+        button.accent-black:hover,
+        button.accent-black:active,
+        button.accent-black:checked {
+            background-color: #000000;
+            color: #ffffff;
+            background-image: none;
+            border-image: none;
+            box-shadow: none;
+        }
+        button.accent-white,
+        button.accent-white:focus,
+        button.accent-white:hover,
+        button.accent-white:active,
+        button.accent-white:checked {
+            background-color: #ffffff;
+            color: #000000;
+            background-image: none;
+            border-image: none;
+            box-shadow: none;
+        }
+        button.accent-green,
+        button.accent-green:focus,
+        button.accent-green:hover,
+        button.accent-green:active,
+        button.accent-green:checked {
+            background-color: #2ec27e;
+            color: #ffffff;
+            background-image: none;
+            border-image: none;
+            box-shadow: none;
+        }
+        /* Ensure label/icon inside inherits text color */
+        button.accent-blue *:not(entry),
+        button.accent-red *:not(entry),
+        button.accent-black *:not(entry),
+        button.accent-white *:not(entry),
+        button.accent-green *:not(entry) {
+            color: inherit;
+        }
+        /* StackSwitcher ToggleButton accents across states */
+        stackswitcher > button.togglebutton.accent-blue,
+        stackswitcher > button.togglebutton.accent-blue:focus,
+        stackswitcher > button.togglebutton.accent-blue:hover,
+        stackswitcher > button.togglebutton.accent-blue:active,
+        stackswitcher > button.togglebutton.accent-blue:checked {
+            background-color: #1c71d8;
+            color: #ffffff;
+            background-image: none;
+            border-image: none;
+            box-shadow: none;
+        }
+        stackswitcher > button.togglebutton.accent-red,
+        stackswitcher > button.togglebutton.accent-red:focus,
+        stackswitcher > button.togglebutton.accent-red:hover,
+        stackswitcher > button.togglebutton.accent-red:active,
+        stackswitcher > button.togglebutton.accent-red:checked {
+            background-color: #c01c28;
+            color: #ffffff;
+            background-image: none;
+            border-image: none;
+            box-shadow: none;
+        }
+        stackswitcher > button.togglebutton.accent-black,
+        stackswitcher > button.togglebutton.accent-black:focus,
+        stackswitcher > button.togglebutton.accent-black:hover,
+        stackswitcher > button.togglebutton.accent-black:active,
+        stackswitcher > button.togglebutton.accent-black:checked {
+            background-color: #000000;
+            color: #ffffff;
+            background-image: none;
+            border-image: none;
+            box-shadow: none;
+        }
+        stackswitcher > button.togglebutton.accent-white,
+        stackswitcher > button.togglebutton.accent-white:focus,
+        stackswitcher > button.togglebutton.accent-white:hover,
+        stackswitcher > button.togglebutton.accent-white:active,
+        stackswitcher > button.togglebutton.accent-white:checked {
+            background-color: #ffffff;
+            color: #000000;
+            background-image: none;
+            border-image: none;
+            box-shadow: none;
+        }
+        stackswitcher > button.togglebutton.accent-green,
+        stackswitcher > button.togglebutton.accent-green:focus,
+        stackswitcher > button.togglebutton.accent-green:hover,
+        stackswitcher > button.togglebutton.accent-green:active,
+        stackswitcher > button.togglebutton.accent-green:checked {
+            background-color: #2ec27e;
+            color: #ffffff;
+            background-image: none;
+            border-image: none;
+            box-shadow: none;
+        }
+        stackswitcher > button.togglebutton.accent-blue *,
+        stackswitcher > button.togglebutton.accent-red *,
+        stackswitcher > button.togglebutton.accent-black *,
+        stackswitcher > button.togglebutton.accent-white *,
+        stackswitcher > button.togglebutton.accent-green * {
+            color: inherit;
+        }
         """
         provider = Gtk.CssProvider()
         provider.load_from_data(css)
         screen = Gdk.Screen.get_default()
         Gtk.StyleContext.add_provider_for_screen(screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        # Use higher priority so our accent classes override theme colors immediately
+        Gtk.StyleContext.add_provider_for_screen(screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_USER)
+
+    def _apply_accent_color(self, color_name):
+        # Update Send button and active tab with selected accent color
+        try:
+            # Normalize to allowed colors
+            allowed = {"blue", "red", "black", "white", "green"}
+            color = (color_name or "blue").lower()
+            if color not in allowed:
+                color = "blue"
+            # Update send button class
+            if hasattr(self, "btn_send") and self.btn_send:
+                ctx = self.btn_send.get_style_context()
+                for cls in ["accent-blue", "accent-red", "accent-black", "accent-white", "accent-green"]:
+                    ctx.remove_class(cls)
+                ctx.add_class(f"accent-{color}")
+            # Update active tab immediately
+            self._update_stackswitcher_accent(self.stack, None)
+        except Exception:
+            pass
 
 
     def _build_chat_page(self):
@@ -248,6 +400,12 @@ class MainWindow(Gtk.Window):
         self.btn_send.set_label("Send")
         self.btn_send.set_always_show_image(True)
         self.btn_send.get_style_context().add_class("suggested-action")
+        # Remove suggested-action to allow custom accent color to control styling
+        # Apply saved accent color on button
+        accent = (self.settings.get("accent_color", "blue") or "blue").lower()
+        for cls in ["accent-blue", "accent-red", "accent-black", "accent-white", "accent-green"]:
+            self.btn_send.get_style_context().remove_class(cls)
+        self.btn_send.get_style_context().add_class(f"accent-{accent}")
         self.btn_send.connect("clicked", self.on_send_clicked)
 
         # Pack input row
@@ -328,6 +486,46 @@ class MainWindow(Gtk.Window):
         grid.attach(btn_fetch_models_settings, 2, row, 1, 1)
         row += 1
 
+        # Accent color picker (simple combo)
+        lbl_color = Gtk.Label(label="Accent Color:", xalign=0)
+        grid.attach(lbl_color, 0, row, 1, 1)
+        self.color_store_settings = Gtk.ListStore(str)
+        for color in ["blue", "red", "black", "white", "green"]:
+            self.color_store_settings.append([color])
+        self.combo_color_settings = Gtk.ComboBox.new_with_model(self.color_store_settings)
+        renderer_text = Gtk.CellRendererText()
+        self.combo_color_settings.pack_start(renderer_text, True)
+        self.combo_color_settings.add_attribute(renderer_text, "text", 0)
+        grid.attach(self.combo_color_settings, 1, row, 1, 1)
+        # Restore saved color
+        saved_color = self.settings.get("accent_color", "blue")
+        def set_active_color_in_combo(combo, store, color):
+            idx = 0
+            found = False
+            for row_it in store:
+                if row_it[0] == color:
+                    combo.set_active(idx)
+                    found = True
+                    break
+                idx += 1
+            if not found:
+                combo.set_active(0)
+        set_active_color_in_combo(self.combo_color_settings, self.color_store_settings, saved_color)
+        # React on change: immediately apply accent and persist
+        def on_color_changed(combo):
+            idx = combo.get_active()
+            if idx is None or idx < 0:
+                return
+            try:
+                selected = self.color_store_settings[idx][0]
+            except Exception:
+                selected = "blue"
+            self.settings["accent_color"] = selected
+            save_settings(self.settings)
+            self._apply_accent_color(selected)
+        self.combo_color_settings.connect("changed", on_color_changed)
+        row += 1
+
         btn_save = Gtk.Button(label="Save Settings")
         btn_save.connect("clicked", self.on_save_clicked)
         grid.attach(btn_save, 2, row, 1, 1)
@@ -346,13 +544,24 @@ class MainWindow(Gtk.Window):
             return False
         try:
             # StackSwitcher in GTK3 is composed of ToggleButtons as children
+            # First remove any previous custom accent classes
             for child in self.stack_switcher.get_children():
                 if isinstance(child, Gtk.ToggleButton):
                     ctx = child.get_style_context()
+                    for cls in ["accent-blue", "accent-red", "accent-black", "accent-white", "accent-green"]:
+                        ctx.remove_class(cls)
                     if child.get_active():
                         ctx.add_class("suggested-action")
+                        # Apply our accent color (no suggested-action)
+                        accent = (self.settings.get("accent_color") or "blue").lower()
+                        # Normalize to allowed colors
+                        if accent not in {"blue", "red", "black", "white", "green"}:
+                            accent = "blue"
+                        ctx.add_class(f"accent-{accent}")
                     else:
                         ctx.remove_class("suggested-action")
+                        # Ensure suggested-action is not applied
+                        pass
         except Exception:
             pass
         return False
@@ -371,6 +580,16 @@ class MainWindow(Gtk.Window):
             if entry:
                 default_model = entry.get_text().strip()
 
+        # Read accent color from combo
+        accent_color = "blue"
+        if hasattr(self, "combo_color_settings") and self.combo_color_settings:
+            idx = self.combo_color_settings.get_active()
+            if idx is not None and idx >= 0 and hasattr(self, "color_store_settings"):
+                try:
+                    accent_color = self.color_store_settings[idx][0]
+                except Exception:
+                    pass
+
         if base_url and not base_url.endswith("/"):
             base_url += "/"
 
@@ -378,6 +597,8 @@ class MainWindow(Gtk.Window):
         self.settings["base_url"] = base_url
         if default_model:
             self.settings["model"] = default_model
+        if accent_color:
+            self.settings["accent_color"] = accent_color
 
         save_settings(self.settings)
 
@@ -392,6 +613,9 @@ class MainWindow(Gtk.Window):
                 self.model_store.append([default_model])
             if hasattr(self, "combo_model"):
                 self.combo_model.set_active(0)
+
+        # Apply accent color immediately
+        self._apply_accent_color(accent_color)
 
         self.set_info("Settings saved")
         # Return to chat view after saving
