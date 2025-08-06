@@ -275,7 +275,8 @@ class MainWindow(Gtk.Window):
                         print(f"Error saving last model to settings.json: {e}")
         self.combo_model.connect("changed", lambda combo: save_last_model(combo))
 
-
+        # Initialize update flag to prevent recursion
+        self._updating_combo = False
 
         # Keyboard shortcuts
         self.add_accel_group(self._build_accel_group())
@@ -293,7 +294,7 @@ class MainWindow(Gtk.Window):
         """Set the model picker selection to the specified model name"""
         if hasattr(self, "combo_model") and self.combo_model:
             # Set the active ComboBox row to the model_name if present
-            for idx, row in enumerate(self.model_filter):
+            for idx, row in enumerate(self.display_model):
                 if row[0] == model_name:
                     self.combo_model.set_active(idx)
                     break
@@ -566,11 +567,14 @@ class MainWindow(Gtk.Window):
         self.model_filter = self.model_store.filter_new()
         self.model_filter.set_visible_func(self._model_filter_func)
 
-        # ComboBox with entry, using the filtered model
-        self.combo_model = Gtk.ComboBox.new_with_model_and_entry(self.model_filter)
-        self.combo_model.set_entry_text_column(0)
-        # Non-editable ComboBox with CellRendererText, using the filtered model
-        self.combo_model = Gtk.ComboBox.new_with_model(self.model_filter)
+        # Create a temporary limited model for display (prevents empty gaps)
+        self.display_model = Gtk.ListStore(str)
+        # Initialize display model with all items
+        for row in self.model_store:
+            self.display_model.append([row[0]])
+
+        # Non-editable ComboBox with CellRendererText, using the display model
+        self.combo_model = Gtk.ComboBox.new_with_model(self.display_model)
         renderer_text = Gtk.CellRendererText()
         renderer_text.set_property("ellipsize", 3)  # Pango.EllipsizeMode.END
         renderer_text.set_property("width-chars", 20)
@@ -593,32 +597,7 @@ class MainWindow(Gtk.Window):
 
         # Connect both combos to sync each other
         self.combo_model.connect("changed", lambda combo: sync_model_combo(self.combo_model, self.combo_model_settings))
-        def on_combo_model_changed(combo):
-            # Only act if a valid model is picked
-            idx = self.combo_model.get_active()
-            if idx is not None and idx >= 0:
-                # Get the selected model name from the filtered model
-                model_iter = self.model_filter.get_iter(Gtk.TreePath(idx))
-                if model_iter:
-                    selected_model = self.model_filter[model_iter][0]
-                    # Clear the search entry and reset filter
-                    if hasattr(self, "model_search_entry"):
-                        self.model_search_entry.set_text("")
-                        self._model_search_text = ""
-                        if hasattr(self, "model_filter"):
-                            self.model_filter.refilter()
-                    # After resetting filter, re-select the chosen model in the full list
-                    # (search field is now empty, so model_filter == model_store)
-                    found = False
-                    for i, row in enumerate(self.model_filter):
-                        if row[0] == selected_model:
-                            self.combo_model.set_active(i)
-                            found = True
-                            break
-                    if not found and len(self.model_filter) > 0:
-                        self.combo_model.set_active(0)
-            sync_model_combo(self.combo_model, self.combo_model_settings)
-        self.combo_model.connect("changed", on_combo_model_changed)
+        self.combo_model.connect("changed", self._on_combo_model_changed)
         self.combo_model_settings.connect("changed", lambda combo: sync_model_combo(self.combo_model_settings, self.combo_model))
 
         # --- Model Search Logic ---
@@ -892,7 +871,9 @@ class MainWindow(Gtk.Window):
             if not exists:
                 self.model_store.append([default_model])
             if hasattr(self, "combo_model"):
-                self.combo_model.set_active(0)
+                self._populate_display_model()
+                if len(self.display_model) > 0:
+                    self.combo_model.set_active(0)
 
         # Apply accent color immediately
         self._apply_accent_color(accent_color)
@@ -993,7 +974,9 @@ class MainWindow(Gtk.Window):
                         if hasattr(self, "combo_model_settings"):
                             self.combo_model_settings.set_active(0)
                         if hasattr(self, "combo_model"):
-                            self.combo_model.set_active(0)
+                            self._populate_display_model()
+                            if len(self.display_model) > 0:
+                                self.combo_model.set_active(0)
                     self.set_info(f"Fetched {len(models)} model(s)")
 
                 GLib.idle_add(update)
@@ -1053,11 +1036,11 @@ class MainWindow(Gtk.Window):
             if entry and last_model:
                 entry.set_text(last_model)
             if last_model:
-                for idx, row in enumerate(self.model_filter):
+                for idx, row in enumerate(self.display_model):
                     if row[0] == last_model:
                         self.combo_model.set_active(idx)
                         break
-            else:
+            elif len(self.display_model) > 0:
                 self.combo_model.set_active(0)
 
     def set_info(self, text):
@@ -1078,11 +1061,8 @@ class MainWindow(Gtk.Window):
         # Use the selected model from the non-editable ComboBox
         if hasattr(self, "combo_model") and self.combo_model:
             idx = self.combo_model.get_active()
-            if idx is not None and idx >= 0:
-                # Always get the model from the current filter (should be full list after clearing search)
-                model_iter = self.model_filter.get_iter(Gtk.TreePath(idx))
-                if model_iter:
-                    return self.model_filter[model_iter][0]
+            if idx is not None and idx >= 0 and idx < len(self.display_model):
+                return self.display_model[idx][0]
         return ""
 
     def on_send_clicked(self, _button):
@@ -1110,10 +1090,8 @@ class MainWindow(Gtk.Window):
         if entry:
             settings["model"] = entry.get_text().strip()
         idx = self.combo_model.get_active()
-        if idx is not None and idx >= 0:
-            model_iter = self.model_filter.get_iter(Gtk.TreePath(idx))
-            if model_iter:
-                settings["model"] = self.model_filter[model_iter][0]
+        if idx is not None and idx >= 0 and idx < len(self.display_model):
+            settings["model"] = self.display_model[idx][0]
         try:
             with open(settings_path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2)
@@ -1193,13 +1171,44 @@ class MainWindow(Gtk.Window):
 
     def _on_model_search_changed(self, entry):
         """Update the filter for the model picker as the user types."""
+        # Prevent recursion during programmatic updates
+        if hasattr(self, '_updating_combo') and self._updating_combo:
+            return
+
         text = entry.get_text().strip().lower()
         self._model_search_text = text
         if hasattr(self, "model_filter"):
+            # Store current selection before filtering
+            current_model = None
+            idx = self.combo_model.get_active()
+            if idx >= 0 and idx < len(self.display_model):
+                current_model = self.display_model[idx][0]
+
+            # Apply filter to the main model
             self.model_filter.refilter()
-        # Reset ComboBox selection when filtering
-        if hasattr(self, "combo_model"):
+
+            # Update the display model with filtered results
+            self._populate_display_model()
+
+            # Set flag to prevent recursion
+            self._updating_combo = True
+
+            # Reset selection and reselect appropriately
             self.combo_model.set_active(-1)
+
+            if current_model:
+                # Try to reselect the current model if it's still visible
+                for i, row in enumerate(self.display_model):
+                    if row[0] == current_model:
+                        self.combo_model.set_active(i)
+                        break
+
+            # If no selection made and we have items, select the first one
+            if self.combo_model.get_active() == -1 and len(self.display_model) > 0:
+                self.combo_model.set_active(0)
+
+            # Clear flag
+            self._updating_combo = False
 
     def _model_filter_func(self, model, iter_, data=None):
         """Filter function for model picker based on search entry."""
@@ -1211,36 +1220,58 @@ class MainWindow(Gtk.Window):
         value = model[iter_][0].lower()
         return search in value
 
-# --- end of file ---
+    def _populate_display_model(self):
+        """Populate the display model with filtered results only."""
+        # Clear the display model
+        self.display_model.clear()
 
-        def _on_model_search_changed(self, entry):
-            """Update the filter for the model picker as the user types."""
-            text = entry.get_text().strip().lower()
-            self._model_search_text = text
-            if hasattr(self, "model_filter"):
-                self.model_filter.refilter()
+        # Get search text for prioritization
+        search_text = getattr(self, '_model_search_text', '').lower()
 
-        def _model_filter_func(self, model, iter_, data=None):
-            """Filter function for model picker based on search entry."""
-            if not hasattr(self, "_model_search_text"):
-                return True
-            search = self._model_search_text
-            if not search:
-                return True
-            value = model[iter_][0].lower()
-            return search in value
+        # Collect all filtered items
+        filtered_items = []
+        for row in self.model_filter:
+            filtered_items.append(row[0])
 
-        first = choices[0]
-        if isinstance(first, dict):
-            if "message" in first and isinstance(first["message"], dict):
-                content = first["message"].get("content")
-                if content:
-                    return content
-            if "text" in first and isinstance(first["text"], str):
-                return first["text"]
+        if search_text:
+            # Sort filtered items: exact matches first, then starts with, then contains
+            exact_matches = []
+            starts_with = []
+            contains = []
 
-        return json.dumps(data, indent=2)
+            for item in filtered_items:
+                item_lower = item.lower()
+                if item_lower == search_text:
+                    exact_matches.append(item)
+                elif item_lower.startswith(search_text):
+                    starts_with.append(item)
+                else:
+                    contains.append(item)
 
+            # Add items in priority order: exact matches at top
+            for item in exact_matches + starts_with + contains:
+                self.display_model.append([item])
+        else:
+            # No search text, add all filtered items in original order
+            for item in filtered_items:
+                self.display_model.append([item])
+
+    def _on_combo_model_changed(self, combo):
+        """Handle combo box model changes - simplified to prevent recursion."""
+        # Only act if a valid model is picked and we're not updating programmatically
+        if hasattr(self, '_updating_combo') and self._updating_combo:
+            return
+
+        idx = self.combo_model.get_active()
+        if idx is not None and idx >= 0 and idx < len(self.display_model):
+            # Get the selected model name from the display model
+            selected_model = self.display_model[idx][0]
+
+            # Sync with settings combo
+            if hasattr(self, "combo_model_settings"):
+                entry = self.combo_model_settings.get_child()
+                if entry:
+                    entry.set_text(selected_model)
 
 def main():
     ensure_config_dir()
