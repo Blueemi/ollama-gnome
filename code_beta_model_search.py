@@ -583,6 +583,9 @@ class MainWindow(Gtk.Window):
         self.combo_model.add_attribute(renderer_text, "text", 0)
         self.combo_model.set_hexpand(False)
         self.combo_model.set_halign(Gtk.Align.FILL)
+
+        # No longer need popup scroll management - using last item selection instead
+
         # Wrap ComboBox in a fixed-width box to prevent resizing
         combo_box_wrapper = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         combo_box_wrapper.set_size_request(220, -1)
@@ -872,8 +875,10 @@ class MainWindow(Gtk.Window):
                 self.model_store.append([default_model])
             if hasattr(self, "combo_model"):
                 self._populate_display_model()
+                # Auto-select the MIDDLE model in the list for optimal visibility
                 if len(self.display_model) > 0:
-                    self.combo_model.set_active(0)
+                    middle_index = len(self.display_model) // 2
+                    self.combo_model.set_active(middle_index)
 
         # Apply accent color immediately
         self._apply_accent_color(accent_color)
@@ -975,8 +980,10 @@ class MainWindow(Gtk.Window):
                             self.combo_model_settings.set_active(0)
                         if hasattr(self, "combo_model"):
                             self._populate_display_model()
+                            # Auto-select the MIDDLE model in the list for optimal visibility
                             if len(self.display_model) > 0:
-                                self.combo_model.set_active(0)
+                                middle_index = len(self.display_model) // 2
+                                self.combo_model.set_active(middle_index)
                     self.set_info(f"Fetched {len(models)} model(s)")
 
                 GLib.idle_add(update)
@@ -1036,12 +1043,21 @@ class MainWindow(Gtk.Window):
             if entry and last_model:
                 entry.set_text(last_model)
             if last_model:
+                # Try to select the last model if it exists
                 for idx, row in enumerate(self.display_model):
                     if row[0] == last_model:
                         self.combo_model.set_active(idx)
                         break
-            elif len(self.display_model) > 0:
-                self.combo_model.set_active(0)
+                else:
+                    # If last model not found, select the MIDDLE item in the list
+                    if len(self.display_model) > 0:
+                        middle_index = len(self.display_model) // 2
+                        self.combo_model.set_active(middle_index)
+            else:
+                # No saved model, select the MIDDLE item in the list
+                if len(self.display_model) > 0:
+                    middle_index = len(self.display_model) // 2
+                    self.combo_model.set_active(middle_index)
 
     def set_info(self, text):
         if hasattr(self, "info_label") and self.info_label:
@@ -1193,19 +1209,13 @@ class MainWindow(Gtk.Window):
             # Set flag to prevent recursion
             self._updating_combo = True
 
-            # Reset selection and reselect appropriately
+            # Reset selection first
             self.combo_model.set_active(-1)
 
-            if current_model:
-                # Try to reselect the current model if it's still visible
-                for i, row in enumerate(self.display_model):
-                    if row[0] == current_model:
-                        self.combo_model.set_active(i)
-                        break
-
-            # If no selection made and we have items, select the first one
-            if self.combo_model.get_active() == -1 and len(self.display_model) > 0:
-                self.combo_model.set_active(0)
+            # Always select the MIDDLE item in the list for optimal visibility
+            if len(self.display_model) > 0:
+                middle_index = len(self.display_model) // 2
+                self.combo_model.set_active(middle_index)
 
             # Clear flag
             self._updating_combo = False
@@ -1272,6 +1282,8 @@ class MainWindow(Gtk.Window):
                 entry = self.combo_model_settings.get_child()
                 if entry:
                     entry.set_text(selected_model)
+
+    # Using middle item auto-selection approach for optimal list visibility
 
 def main():
     ensure_config_dir()
