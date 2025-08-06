@@ -248,31 +248,14 @@ class MainWindow(Gtk.Window):
 
         # Synchronize model selection between chat and settings tabs
         def sync_model_combo(source_combo, target_combo):
-            source_entry = source_combo.get_child()
-            target_entry = target_combo.get_child()
-            if source_entry and target_entry:
-                val = source_entry.get_text().strip()
-                if val != target_entry.get_text().strip():
-                    target_entry.set_text(val)
+            # Sync selection by active index, not by entry text
+            idx = source_combo.get_active()
+            if idx is not None and idx >= 0:
+                target_combo.set_active(idx)
         self.combo_model_settings.connect("changed", lambda combo: sync_model_combo(self.combo_model_settings, self.combo_model_settings))
 
         # Save last picked model to settings.json whenever selection changes
         def save_last_model(combo):
-            entry = combo.get_child()
-            if entry:
-                model_val = entry.get_text().strip()
-                settings_path = os.path.join(CONFIG_DIR, "settings.json")
-                try:
-                    with open(settings_path, "r", encoding="utf-8") as f:
-                        settings = json.load(f)
-                except Exception:
-                    settings = {}
-                settings["model"] = model_val
-                try:
-                    with open(settings_path, "w", encoding="utf-8") as f:
-                        json.dump(settings, f, indent=2)
-                except Exception as e:
-                    print(f"Error saving last model to settings.json: {e}")
             idx = combo.get_active()
             if idx is not None and idx >= 0:
                 model_iter = self.model_filter.get_iter(Gtk.TreePath(idx))
@@ -307,11 +290,8 @@ class MainWindow(Gtk.Window):
             GLib.idle_add(self._set_model_picker_text, self._last_model_to_set)
 
     def _set_model_picker_text(self, model_name):
-        """Set the model picker entry text to the specified model name"""
+        """Set the model picker selection to the specified model name"""
         if hasattr(self, "combo_model") and self.combo_model:
-            entry = self.combo_model.get_child()
-            if entry:
-                entry.set_text(model_name)
             # Set the active ComboBox row to the model_name if present
             for idx, row in enumerate(self.model_filter):
                 if row[0] == model_name:
@@ -606,16 +586,10 @@ class MainWindow(Gtk.Window):
 
         # Synchronize model selection between chat and settings tabs
         def sync_model_combo(source_combo, target_combo):
-            source_entry = source_combo.get_child()
-            target_entry = target_combo.get_child()
-            if source_entry and target_entry:
-                val = source_entry.get_text().strip()
-                if val != target_entry.get_text().strip():
-                    target_entry.set_text(val)
-            # Synchronize selection index between combos
             idx = source_combo.get_active()
             if idx is not None and idx >= 0:
                 target_combo.set_active(idx)
+        self.combo_model_settings.connect("changed", lambda combo: sync_model_combo(self.combo_model_settings, self.combo_model_settings))
 
         # Connect both combos to sync each other
         self.combo_model.connect("changed", lambda combo: sync_model_combo(self.combo_model, self.combo_model_settings))
@@ -635,10 +609,14 @@ class MainWindow(Gtk.Window):
                             self.model_filter.refilter()
                     # After resetting filter, re-select the chosen model in the full list
                     # (search field is now empty, so model_filter == model_store)
+                    found = False
                     for i, row in enumerate(self.model_filter):
                         if row[0] == selected_model:
                             self.combo_model.set_active(i)
+                            found = True
                             break
+                    if not found and len(self.model_filter) > 0:
+                        self.combo_model.set_active(0)
             sync_model_combo(self.combo_model, self.combo_model_settings)
         self.combo_model.connect("changed", on_combo_model_changed)
         self.combo_model_settings.connect("changed", lambda combo: sync_model_combo(self.combo_model_settings, self.combo_model))
@@ -740,6 +718,8 @@ class MainWindow(Gtk.Window):
             bubble_label.set_xalign(0.5)
             hb.set_halign(Gtk.Align.CENTER)
             hb.pack_start(bubble_box, False, False, 8)
+
+        print(f"[DEBUG] _append_bubble: role={role}, text={repr(text)}")  # Debug output
 
         bubble_box.pack_start(bubble_label, True, True, 8)
         row = Gtk.ListBoxRow()
@@ -1195,8 +1175,21 @@ class MainWindow(Gtk.Window):
         data = r.json()
 
         choices = data.get("choices") or []
+        print(f"[DEBUG] send_chat_completion: response data={repr(data)}")  # Debug output
         if not choices:
             return json.dumps(data, indent=2)
+
+        # Extract assistant message content robustly
+        first = choices[0]
+        content = None
+        if isinstance(first, dict):
+            if "message" in first and isinstance(first["message"], dict):
+                content = first["message"].get("content")
+            elif "text" in first and isinstance(first["text"], str):
+                content = first["text"]
+        if not content:
+            content = json.dumps(data, indent=2)
+        return content
 
     def _on_model_search_changed(self, entry):
         """Update the filter for the model picker as the user types."""
