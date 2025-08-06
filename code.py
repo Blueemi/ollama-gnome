@@ -73,6 +73,19 @@ def add_chat_css():
         background: transparent;
         padding: 6px;
     }
+    .chat-input-area {
+        background: rgba(255, 255, 255, 0.02);
+        border-top: 1px solid rgba(0, 0, 0, 0.1);
+        padding: 8px;
+    }
+    .chat-input-row {
+        min-height: 36px;
+    }
+    .chat-input-row entry,
+    .chat-input-row combobox,
+    .chat-input-row button {
+        min-height: 36px;
+    }
     """
     style_provider = Gtk.CssProvider()
     style_provider.load_from_data(css)
@@ -105,47 +118,7 @@ def markdown_to_markup(text):
 
     return text
 
-def add_chat_css():
-    css = b"""
-    .chat-bubble-user {
-        background: #e0f7fa;
-        border-radius: 16px;
-        padding: 12px 18px;
-        margin: 8px 0 8px 48px;
-        border: 1px solid #b2ebf2;
-        color: #006064;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-    }
-    .chat-bubble-assistant {
-        background: #f1f8e9;
-        border-radius: 16px;
-        padding: 12px 18px;
-        margin: 8px 48px 8px 0;
-        border: 1px solid #c5e1a5;
-        color: #33691e;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-    }
-    .chat-bubble-system {
-        background: #eeeeee;
-        border-radius: 12px;
-        padding: 10px 16px;
-        margin: 8px 64px 8px 64px;
-        border: 1px solid #bdbdbd;
-        color: #424242;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-    }
-    .chat-list-box {
-        background: transparent;
-        padding: 12px;
-    }
-    """
-    style_provider = Gtk.CssProvider()
-    style_provider.load_from_data(css)
-    Gtk.StyleContext.add_provider_for_screen(
-        Gdk.Screen.get_default(),
-        style_provider,
-        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-    )
+
 
 
 def ensure_config_dir():
@@ -540,7 +513,7 @@ class MainWindow(Gtk.Window):
     def _build_chat_page(self):
         # Add custom CSS for chat bubbles
         add_chat_css()
-        # Vertical layout: scroll area with bubbles + input row
+        # Vertical layout: scroll area with bubbles + input area
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         vbox.get_style_context().add_class("chat-container")
 
@@ -556,11 +529,9 @@ class MainWindow(Gtk.Window):
 
         # --- Model Search Entry and Filtered ComboBox ---
         # Create a search entry for filtering models
-        # Create a search entry for filtering models (standalone row)
         self.model_search_entry = Gtk.Entry()
         self.model_search_entry.set_placeholder_text("Search models...")
         self.model_search_entry.set_hexpand(True)
-        self.model_search_entry.set_width_chars(18)
 
         # Use a TreeModelFilter for filtering the model list
         self.model_store = self.model_store_settings  # Underlying store
@@ -584,8 +555,6 @@ class MainWindow(Gtk.Window):
         self.combo_model.set_hexpand(False)
         self.combo_model.set_halign(Gtk.Align.FILL)
 
-        # No longer need popup scroll management - using last item selection instead
-
         # Wrap ComboBox in a fixed-width box to prevent resizing
         combo_box_wrapper = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         combo_box_wrapper.set_size_request(220, -1)
@@ -606,38 +575,35 @@ class MainWindow(Gtk.Window):
         # --- Model Search Logic ---
         self.model_search_entry.connect("changed", self._on_model_search_changed)
 
-        # Model picker row (search + combo + fetch)
-        model_picker_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        model_picker_row.pack_start(self.model_search_entry, True, True, 0)
-        model_picker_row.pack_start(self.combo_model, False, False, 0)
-        # Layout: search entry row, then input row
-        input_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-
+        # Create fetch models button
         btn_fetch_models = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
         btn_fetch_models.set_tooltip_text("Fetch models")
         btn_fetch_models.connect("clicked", self.on_fetch_models_clicked)
-        model_picker_row.pack_start(btn_fetch_models, False, False, 0)
-        # Search entry row (full width)
-        search_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+
+        # Input area with consistent spacing and alignment
+        input_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        input_area.get_style_context().add_class("chat-input-area")
+        input_area.set_margin_top(8)
+        input_area.set_margin_bottom(8)
+        input_area.set_margin_start(8)
+        input_area.set_margin_end(8)
+
+        # Model search row
+        search_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        search_row.get_style_context().add_class("chat-input-row")
         search_row.pack_start(self.model_search_entry, True, True, 0)
         input_area.pack_start(search_row, False, False, 0)
 
-        vbox.pack_start(model_picker_row, False, False, 0)
+        # Model selection and controls row
+        model_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        model_row.get_style_context().add_class("chat-input-row")
+        model_row.pack_start(combo_box_wrapper, False, False, 0)
+        model_row.pack_start(btn_fetch_models, False, False, 0)
+        input_area.pack_start(model_row, False, False, 0)
 
-        # Input row
-        # Input row: picker, fetch, chat entry, send button
+        # Chat input row
         input_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        input_row.get_style_context().add_class("input-row")
-
-        # Text entry for chat (single-line, GNOME look)
-        # Model picker (fixed width, left-aligned, wrapped to prevent resizing)
-        input_row.pack_start(combo_box_wrapper, False, False, 0)
-
-        # Fetch models button (left of chat entry)
-        btn_fetch_models = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
-        btn_fetch_models.set_tooltip_text("Fetch models")
-        btn_fetch_models.connect("clicked", self.on_fetch_models_clicked)
-        input_row.pack_start(btn_fetch_models, False, False, 0)
+        input_row.get_style_context().add_class("chat-input-row")
 
         # Chat entry (expands)
         self.entry_chat = Gtk.Entry()
@@ -646,7 +612,6 @@ class MainWindow(Gtk.Window):
         input_row.pack_start(self.entry_chat, True, True, 0)
 
         # Send button
-        # Send button (right-aligned)
         self.btn_send = Gtk.Button.new_from_icon_name("mail-send-symbolic", Gtk.IconSize.BUTTON)
         self.btn_send.set_label("Send")
         self.btn_send.set_always_show_image(True)
@@ -656,14 +621,10 @@ class MainWindow(Gtk.Window):
             self.btn_send.get_style_context().remove_class(cls)
         self.btn_send.get_style_context().add_class(f"accent-{accent}")
         self.btn_send.connect("clicked", self.on_send_clicked)
+        input_row.pack_start(self.btn_send, False, False, 0)
 
-        # Pack input row
-        input_row.pack_start(self.entry_chat, True, True, 0)
-        input_row.pack_end(self.btn_send, False, False, 0)
-
-        vbox.pack_end(input_row, False, False, 0)
         input_area.pack_start(input_row, False, False, 0)
-        vbox.pack_end(input_area, False, False, 0)
+        vbox.pack_start(input_area, False, False, 0)
 
         # Connect Enter key to send message
         self.entry_chat.connect("activate", self.on_send_clicked)
