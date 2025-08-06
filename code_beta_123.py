@@ -86,6 +86,8 @@ def markdown_to_markup(text):
     """Convert basic markdown to Pango markup"""
     import re
 
+    if text is None:
+        return ""
     # Escape existing markup
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
@@ -271,6 +273,23 @@ class MainWindow(Gtk.Window):
                         json.dump(settings, f, indent=2)
                 except Exception as e:
                     print(f"Error saving last model to settings.json: {e}")
+            idx = combo.get_active()
+            if idx is not None and idx >= 0:
+                model_iter = self.model_filter.get_iter(Gtk.TreePath(idx))
+                if model_iter:
+                    model_val = self.model_filter[model_iter][0]
+                    settings_path = os.path.join(CONFIG_DIR, "settings.json")
+                    try:
+                        with open(settings_path, "r", encoding="utf-8") as f:
+                            settings = json.load(f)
+                    except Exception:
+                        settings = {}
+                    settings["model"] = model_val
+                    try:
+                        with open(settings_path, "w", encoding="utf-8") as f:
+                            json.dump(settings, f, indent=2)
+                    except Exception as e:
+                        print(f"Error saving last model to settings.json: {e}")
         self.combo_model.connect("changed", lambda combo: save_last_model(combo))
 
 
@@ -293,6 +312,11 @@ class MainWindow(Gtk.Window):
             entry = self.combo_model.get_child()
             if entry:
                 entry.set_text(model_name)
+            # Set the active ComboBox row to the model_name if present
+            for idx, row in enumerate(self.model_filter):
+                if row[0] == model_name:
+                    self.combo_model.set_active(idx)
+                    break
         return False  # Remove from GLib.idle_add queue
 
     def _build_accel_group(self):
@@ -551,9 +575,11 @@ class MainWindow(Gtk.Window):
 
         # --- Model Search Entry and Filtered ComboBox ---
         # Create a search entry for filtering models
+        # Create a search entry for filtering models (standalone row)
         self.model_search_entry = Gtk.Entry()
         self.model_search_entry.set_placeholder_text("Search models...")
         self.model_search_entry.set_hexpand(True)
+        self.model_search_entry.set_width_chars(18)
 
         # Use a TreeModelFilter for filtering the model list
         self.model_store = self.model_store_settings  # Underlying store
@@ -563,7 +589,20 @@ class MainWindow(Gtk.Window):
         # ComboBox with entry, using the filtered model
         self.combo_model = Gtk.ComboBox.new_with_model_and_entry(self.model_filter)
         self.combo_model.set_entry_text_column(0)
+        # Non-editable ComboBox with CellRendererText, using the filtered model
+        self.combo_model = Gtk.ComboBox.new_with_model(self.model_filter)
+        renderer_text = Gtk.CellRendererText()
+        renderer_text.set_property("ellipsize", 3)  # Pango.EllipsizeMode.END
+        renderer_text.set_property("width-chars", 20)
+        renderer_text.set_property("width", 200)  # Fixed pixel width for renderer
+        self.combo_model.pack_start(renderer_text, True)
+        self.combo_model.add_attribute(renderer_text, "text", 0)
         self.combo_model.set_hexpand(False)
+        self.combo_model.set_halign(Gtk.Align.FILL)
+        # Wrap ComboBox in a fixed-width box to prevent resizing
+        combo_box_wrapper = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        combo_box_wrapper.set_size_request(220, -1)
+        combo_box_wrapper.pack_start(self.combo_model, True, True, 0)
 
         # Synchronize model selection between chat and settings tabs
         def sync_model_combo(source_combo, target_combo):
@@ -573,9 +612,35 @@ class MainWindow(Gtk.Window):
                 val = source_entry.get_text().strip()
                 if val != target_entry.get_text().strip():
                     target_entry.set_text(val)
+            # Synchronize selection index between combos
+            idx = source_combo.get_active()
+            if idx is not None and idx >= 0:
+                target_combo.set_active(idx)
 
         # Connect both combos to sync each other
         self.combo_model.connect("changed", lambda combo: sync_model_combo(self.combo_model, self.combo_model_settings))
+        def on_combo_model_changed(combo):
+            # Only act if a valid model is picked
+            idx = self.combo_model.get_active()
+            if idx is not None and idx >= 0:
+                # Get the selected model name from the filtered model
+                model_iter = self.model_filter.get_iter(Gtk.TreePath(idx))
+                if model_iter:
+                    selected_model = self.model_filter[model_iter][0]
+                    # Clear the search entry and reset filter
+                    if hasattr(self, "model_search_entry"):
+                        self.model_search_entry.set_text("")
+                        self._model_search_text = ""
+                        if hasattr(self, "model_filter"):
+                            self.model_filter.refilter()
+                    # After resetting filter, re-select the chosen model in the full list
+                    # (search field is now empty, so model_filter == model_store)
+                    for i, row in enumerate(self.model_filter):
+                        if row[0] == selected_model:
+                            self.combo_model.set_active(i)
+                            break
+            sync_model_combo(self.combo_model, self.combo_model_settings)
+        self.combo_model.connect("changed", on_combo_model_changed)
         self.combo_model_settings.connect("changed", lambda combo: sync_model_combo(self.combo_model_settings, self.combo_model))
 
         # --- Model Search Logic ---
@@ -585,24 +650,43 @@ class MainWindow(Gtk.Window):
         model_picker_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         model_picker_row.pack_start(self.model_search_entry, True, True, 0)
         model_picker_row.pack_start(self.combo_model, False, False, 0)
+        # Layout: search entry row, then input row
+        input_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
 
         btn_fetch_models = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
         btn_fetch_models.set_tooltip_text("Fetch models")
         btn_fetch_models.connect("clicked", self.on_fetch_models_clicked)
         model_picker_row.pack_start(btn_fetch_models, False, False, 0)
+        # Search entry row (full width)
+        search_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        search_row.pack_start(self.model_search_entry, True, True, 0)
+        input_area.pack_start(search_row, False, False, 0)
 
         vbox.pack_start(model_picker_row, False, False, 0)
 
         # Input row
+        # Input row: picker, fetch, chat entry, send button
         input_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         input_row.get_style_context().add_class("input-row")
 
         # Text entry for chat (single-line, GNOME look)
+        # Model picker (fixed width, left-aligned, wrapped to prevent resizing)
+        input_row.pack_start(combo_box_wrapper, False, False, 0)
+
+        # Fetch models button (left of chat entry)
+        btn_fetch_models = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
+        btn_fetch_models.set_tooltip_text("Fetch models")
+        btn_fetch_models.connect("clicked", self.on_fetch_models_clicked)
+        input_row.pack_start(btn_fetch_models, False, False, 0)
+
+        # Chat entry (expands)
         self.entry_chat = Gtk.Entry()
         self.entry_chat.set_hexpand(True)
         self.entry_chat.set_placeholder_text("Type your message here")
+        input_row.pack_start(self.entry_chat, True, True, 0)
 
         # Send button
+        # Send button (right-aligned)
         self.btn_send = Gtk.Button.new_from_icon_name("mail-send-symbolic", Gtk.IconSize.BUTTON)
         self.btn_send.set_label("Send")
         self.btn_send.set_always_show_image(True)
@@ -618,6 +702,9 @@ class MainWindow(Gtk.Window):
         input_row.pack_end(self.btn_send, False, False, 0)
 
         vbox.pack_end(input_row, False, False, 0)
+        input_area.pack_start(input_row, False, False, 0)
+        vbox.pack_end(input_area, False, False, 0)
+
         # Connect Enter key to send message
         self.entry_chat.connect("activate", self.on_send_clicked)
         return vbox
@@ -972,6 +1059,7 @@ class MainWindow(Gtk.Window):
             self.model_store.append([m])
         if len(models) > 0:
             # Set entry text to last used model from settings.json if available
+            # Set ComboBox to last used model from settings.json if available
             settings_path = os.path.join(CONFIG_DIR, "settings.json")
             last_model = None
             if os.path.exists(settings_path):
@@ -984,6 +1072,11 @@ class MainWindow(Gtk.Window):
             entry = self.combo_model.get_child()
             if entry and last_model:
                 entry.set_text(last_model)
+            if last_model:
+                for idx, row in enumerate(self.model_filter):
+                    if row[0] == last_model:
+                        self.combo_model.set_active(idx)
+                        break
             else:
                 self.combo_model.set_active(0)
 
@@ -1002,10 +1095,19 @@ class MainWindow(Gtk.Window):
                 if val:
                     return val
         return ""
+        # Use the selected model from the non-editable ComboBox
+        if hasattr(self, "combo_model") and self.combo_model:
+            idx = self.combo_model.get_active()
+            if idx is not None and idx >= 0:
+                # Always get the model from the current filter (should be full list after clearing search)
+                model_iter = self.model_filter.get_iter(Gtk.TreePath(idx))
+                if model_iter:
+                    return self.model_filter[model_iter][0]
         return ""
 
     def on_send_clicked(self, _button):
         model = self.get_selected_model()
+        print(f"[DEBUG] Selected model for sending: '{model}'")
         if not model:
             self.set_info("Please select or enter a model")
             return
@@ -1027,6 +1129,11 @@ class MainWindow(Gtk.Window):
         entry = self.combo_model_settings.get_child()
         if entry:
             settings["model"] = entry.get_text().strip()
+        idx = self.combo_model.get_active()
+        if idx is not None and idx >= 0:
+            model_iter = self.model_filter.get_iter(Gtk.TreePath(idx))
+            if model_iter:
+                settings["model"] = self.model_filter[model_iter][0]
         try:
             with open(settings_path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2)
@@ -1097,6 +1204,9 @@ class MainWindow(Gtk.Window):
         self._model_search_text = text
         if hasattr(self, "model_filter"):
             self.model_filter.refilter()
+        # Reset ComboBox selection when filtering
+        if hasattr(self, "combo_model"):
+            self.combo_model.set_active(-1)
 
     def _model_filter_func(self, model, iter_, data=None):
         """Filter function for model picker based on search entry."""
