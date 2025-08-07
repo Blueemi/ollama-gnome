@@ -29,7 +29,7 @@ from urllib.parse import urljoin
 
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Gio, GLib, Gdk
+from gi.repository import Gtk, Gio, GLib, Gdk, Pango
 
 import requests
 
@@ -43,7 +43,7 @@ def add_chat_css():
         background: #e0f7fa;
         border-radius: 12px;
         padding: 6px 12px;
-        margin: 4px 0 4px 32px;
+        margin: 4px 4px 4px 4px;
         border: 1px solid #b2ebf2;
         color: #006064;
         font-size: 13px;
@@ -53,7 +53,7 @@ def add_chat_css():
         background: #f1f8e9;
         border-radius: 12px;
         padding: 6px 12px;
-        margin: 4px 32px 4px 0;
+        margin: 4px 4px 4px 4px;
         border: 1px solid #c5e1a5;
         color: #33691e;
         font-size: 13px;
@@ -63,7 +63,7 @@ def add_chat_css():
         background: #eeeeee;
         border-radius: 10px;
         padding: 5px 10px;
-        margin: 4px 48px 4px 48px;
+        margin: 4px 4px 4px 4px;
         border: 1px solid #bdbdbd;
         color: #424242;
         font-size: 12px;
@@ -71,7 +71,20 @@ def add_chat_css():
     }
     .chat-list-box {
         background: transparent;
-        padding: 6px;
+        padding: 2px;
+    }
+    .chat-input-area {
+        background: rgba(255, 255, 255, 0.02);
+        border-top: 1px solid rgba(0, 0, 0, 0.1);
+        padding: 8px;
+    }
+    .chat-input-row {
+        min-height: 36px;
+    }
+    .chat-input-row entry,
+    .chat-input-row combobox,
+    .chat-input-row button {
+        min-height: 36px;
     }
     """
     style_provider = Gtk.CssProvider()
@@ -105,47 +118,7 @@ def markdown_to_markup(text):
 
     return text
 
-def add_chat_css():
-    css = b"""
-    .chat-bubble-user {
-        background: #e0f7fa;
-        border-radius: 16px;
-        padding: 12px 18px;
-        margin: 8px 0 8px 48px;
-        border: 1px solid #b2ebf2;
-        color: #006064;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-    }
-    .chat-bubble-assistant {
-        background: #f1f8e9;
-        border-radius: 16px;
-        padding: 12px 18px;
-        margin: 8px 48px 8px 0;
-        border: 1px solid #c5e1a5;
-        color: #33691e;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-    }
-    .chat-bubble-system {
-        background: #eeeeee;
-        border-radius: 12px;
-        padding: 10px 16px;
-        margin: 8px 64px 8px 64px;
-        border: 1px solid #bdbdbd;
-        color: #424242;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-    }
-    .chat-list-box {
-        background: transparent;
-        padding: 12px;
-    }
-    """
-    style_provider = Gtk.CssProvider()
-    style_provider.load_from_data(css)
-    Gtk.StyleContext.add_provider_for_screen(
-        Gdk.Screen.get_default(),
-        style_provider,
-        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-    )
+
 
 
 def ensure_config_dir():
@@ -221,15 +194,6 @@ class MainWindow(Gtk.Window):
 
         # Automatically load models from models.json and populate model picker
         models_path = os.path.join(CONFIG_DIR, "models.json")
-        settings_path = os.path.join(CONFIG_DIR, "settings.json")
-        last_model = None
-        if os.path.exists(settings_path):
-            try:
-                with open(settings_path, "r", encoding="utf-8") as f:
-                    settings = json.load(f)
-                last_model = settings.get("model", None)
-            except Exception as e:
-                print(f"Error loading settings.json: {e}")
         if os.path.exists(models_path):
             try:
                 with open(models_path, "r", encoding="utf-8") as f:
@@ -237,10 +201,14 @@ class MainWindow(Gtk.Window):
                 self.model_store_settings.clear()
                 for m in models:
                     self.model_store_settings.append([m])
+                # Also populate display model if it exists
+                if hasattr(self, 'display_model'):
+                    self.display_model.clear()
+                    for m in models:
+                        self.display_model.append([m])
+                print(f"[DEBUG] Loaded {len(models)} models from models.json")
             except Exception as e:
                 print(f"Error loading models.json: {e}")
-        # Store last model to set later when UI is ready
-        self._last_model_to_set = last_model
 
         # Settings view
         self.settings_page = self._build_settings_page()
@@ -248,32 +216,42 @@ class MainWindow(Gtk.Window):
 
         # Synchronize model selection between chat and settings tabs
         def sync_model_combo(source_combo, target_combo):
+            if hasattr(self, '_updating_combo') and self._updating_combo:
+                return  # Prevent recursion during programmatic updates
             # Sync selection by active index, not by entry text
             idx = source_combo.get_active()
             if idx is not None and idx >= 0:
+                self._updating_combo = True
                 target_combo.set_active(idx)
-        self.combo_model_settings.connect("changed", lambda combo: sync_model_combo(self.combo_model_settings, self.combo_model_settings))
+                self._updating_combo = False
+        self.combo_model_settings.connect("changed", lambda combo: sync_model_combo(self.combo_model_settings, self.combo_model))
 
         # Save last picked model to settings.json whenever selection changes
         def save_last_model(combo):
+            if hasattr(self, '_updating_combo') and self._updating_combo:
+                return  # Prevent recursion during programmatic updates
             idx = combo.get_active()
             if idx is not None and idx >= 0:
-                model_iter = self.model_filter.get_iter(Gtk.TreePath(idx))
-                if model_iter:
-                    model_val = self.model_filter[model_iter][0]
-                    settings_path = os.path.join(CONFIG_DIR, "settings.json")
-                    try:
-                        with open(settings_path, "r", encoding="utf-8") as f:
-                            settings = json.load(f)
-                    except Exception:
-                        settings = {}
-                    settings["model"] = model_val
-                    try:
-                        with open(settings_path, "w", encoding="utf-8") as f:
-                            json.dump(settings, f, indent=2)
-                    except Exception as e:
-                        print(f"Error saving last model to settings.json: {e}")
+                model_val = None
+                # Get model from display model for chat combo
+                if combo == self.combo_model and hasattr(self, 'display_model'):
+                    if idx < len(self.display_model):
+                        model_val = self.display_model[idx][0]
+                # Get model from settings store for settings combo
+                elif combo == self.combo_model_settings:
+                    if idx < len(self.model_store_settings):
+                        model_val = self.model_store_settings[idx][0]
+                else:
+                    return
+
+                # Update settings and save only if we have a valid model
+                if model_val:
+                    self.settings["model"] = model_val
+                    save_settings(self.settings)
+                    print(f"[DEBUG] Saved model to settings: {model_val}")
+
         self.combo_model.connect("changed", lambda combo: save_last_model(combo))
+        self.combo_model_settings.connect("changed", lambda combo: save_last_model(combo))
 
         # Initialize update flag to prevent recursion
         self._updating_combo = False
@@ -287,8 +265,14 @@ class MainWindow(Gtk.Window):
         self._apply_accent_color(self.settings.get("accent_color", "blue"))
 
         # Set last picked model from settings.json after UI is fully built
-        if hasattr(self, '_last_model_to_set') and self._last_model_to_set:
-            GLib.idle_add(self._set_model_picker_text, self._last_model_to_set)
+        GLib.idle_add(self._load_and_set_saved_model)
+
+        # Also populate display model with initial models if we have them
+        if len(self.model_store_settings) > 0:
+            if hasattr(self, 'display_model'):
+                self.display_model.clear()
+                for row in self.model_store_settings:
+                    self.display_model.append([row[0]])
 
     def _set_model_picker_text(self, model_name):
         """Set the model picker selection to the specified model name"""
@@ -298,6 +282,53 @@ class MainWindow(Gtk.Window):
                 if row[0] == model_name:
                     self.combo_model.set_active(idx)
                     break
+        return False  # Remove from GLib.idle_add queue
+
+    def _load_and_set_saved_model(self):
+        """Load saved model from settings.json and set it in both combo boxes"""
+        try:
+            saved_model = self.settings.get("model", None)
+            print(f"[DEBUG] _load_and_set_saved_model: saved_model={saved_model}")
+
+            if saved_model:
+                self._updating_combo = True
+
+                # Set in chat combo box
+                if hasattr(self, "combo_model") and hasattr(self, "display_model"):
+                    print(f"[DEBUG] Chat combo exists, display_model has {len(self.display_model)} items")
+                    found_chat = False
+                    for idx, row in enumerate(self.display_model):
+                        if row[0] == saved_model:
+                            print(f"[DEBUG] Setting chat combo to index {idx}: {saved_model}")
+                            self.combo_model.set_active(idx)
+                            # Force UI refresh
+                            self.combo_model.queue_draw()
+                            found_chat = True
+                            break
+                    if not found_chat:
+                        print(f"[DEBUG] Model '{saved_model}' not found in display_model")
+
+                # Set in settings combo box
+                if hasattr(self, "combo_model_settings") and hasattr(self, "model_store_settings"):
+                    print(f"[DEBUG] Settings combo exists, model_store has {len(self.model_store_settings)} items")
+                    found_settings = False
+                    for idx, row in enumerate(self.model_store_settings):
+                        if row[0] == saved_model:
+                            print(f"[DEBUG] Setting settings combo to index {idx}: {saved_model}")
+                            self.combo_model_settings.set_active(idx)
+                            # Force UI refresh
+                            self.combo_model_settings.queue_draw()
+                            found_settings = True
+                            break
+                    if not found_settings:
+                        print(f"[DEBUG] Model '{saved_model}' not found in model_store_settings")
+
+                self._updating_combo = False
+                print(f"[DEBUG] Loaded saved model: {saved_model}")
+            else:
+                print("[DEBUG] No saved model found in settings")
+        except Exception as e:
+            print(f"[DEBUG] Error loading saved model: {e}")
         return False  # Remove from GLib.idle_add queue
 
     def _build_accel_group(self):
@@ -540,7 +571,7 @@ class MainWindow(Gtk.Window):
     def _build_chat_page(self):
         # Add custom CSS for chat bubbles
         add_chat_css()
-        # Vertical layout: scroll area with bubbles + input row
+        # Vertical layout: scroll area with bubbles + input area
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         vbox.get_style_context().add_class("chat-container")
 
@@ -556,11 +587,9 @@ class MainWindow(Gtk.Window):
 
         # --- Model Search Entry and Filtered ComboBox ---
         # Create a search entry for filtering models
-        # Create a search entry for filtering models (standalone row)
         self.model_search_entry = Gtk.Entry()
         self.model_search_entry.set_placeholder_text("Search models...")
         self.model_search_entry.set_hexpand(True)
-        self.model_search_entry.set_width_chars(18)
 
         # Use a TreeModelFilter for filtering the model list
         self.model_store = self.model_store_settings  # Underlying store
@@ -569,34 +598,29 @@ class MainWindow(Gtk.Window):
 
         # Create a temporary limited model for display (prevents empty gaps)
         self.display_model = Gtk.ListStore(str)
-        # Initialize display model with all items
+        # Initialize display model with all items from model store
         for row in self.model_store:
             self.display_model.append([row[0]])
+        print(f"[DEBUG] Initialized display_model with {len(self.display_model)} models")
 
         # Non-editable ComboBox with CellRendererText, using the display model
         self.combo_model = Gtk.ComboBox.new_with_model(self.display_model)
         renderer_text = Gtk.CellRendererText()
         renderer_text.set_property("ellipsize", 3)  # Pango.EllipsizeMode.END
-        renderer_text.set_property("width-chars", 20)
-        renderer_text.set_property("width", 200)  # Fixed pixel width for renderer
         self.combo_model.pack_start(renderer_text, True)
         self.combo_model.add_attribute(renderer_text, "text", 0)
-        self.combo_model.set_hexpand(False)
+        self.combo_model.set_hexpand(True)
         self.combo_model.set_halign(Gtk.Align.FILL)
-
-        # No longer need popup scroll management - using last item selection instead
-
-        # Wrap ComboBox in a fixed-width box to prevent resizing
-        combo_box_wrapper = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        combo_box_wrapper.set_size_request(220, -1)
-        combo_box_wrapper.pack_start(self.combo_model, True, True, 0)
 
         # Synchronize model selection between chat and settings tabs
         def sync_model_combo(source_combo, target_combo):
+            if hasattr(self, '_updating_combo') and self._updating_combo:
+                return  # Prevent recursion during programmatic updates
             idx = source_combo.get_active()
             if idx is not None and idx >= 0:
+                self._updating_combo = True
                 target_combo.set_active(idx)
-        self.combo_model_settings.connect("changed", lambda combo: sync_model_combo(self.combo_model_settings, self.combo_model_settings))
+                self._updating_combo = False
 
         # Connect both combos to sync each other
         self.combo_model.connect("changed", lambda combo: sync_model_combo(self.combo_model, self.combo_model_settings))
@@ -606,38 +630,35 @@ class MainWindow(Gtk.Window):
         # --- Model Search Logic ---
         self.model_search_entry.connect("changed", self._on_model_search_changed)
 
-        # Model picker row (search + combo + fetch)
-        model_picker_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        model_picker_row.pack_start(self.model_search_entry, True, True, 0)
-        model_picker_row.pack_start(self.combo_model, False, False, 0)
-        # Layout: search entry row, then input row
-        input_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-
+        # Create fetch models button
         btn_fetch_models = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
         btn_fetch_models.set_tooltip_text("Fetch models")
         btn_fetch_models.connect("clicked", self.on_fetch_models_clicked)
-        model_picker_row.pack_start(btn_fetch_models, False, False, 0)
-        # Search entry row (full width)
-        search_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+
+        # Input area with consistent spacing and alignment
+        input_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        input_area.get_style_context().add_class("chat-input-area")
+        input_area.set_margin_top(8)
+        input_area.set_margin_bottom(8)
+        input_area.set_margin_start(8)
+        input_area.set_margin_end(8)
+
+        # Model search row
+        search_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        search_row.get_style_context().add_class("chat-input-row")
         search_row.pack_start(self.model_search_entry, True, True, 0)
         input_area.pack_start(search_row, False, False, 0)
 
-        vbox.pack_start(model_picker_row, False, False, 0)
+        # Model selection and controls row
+        model_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        model_row.get_style_context().add_class("chat-input-row")
+        model_row.pack_start(self.combo_model, True, True, 0)
+        model_row.pack_start(btn_fetch_models, False, False, 0)
+        input_area.pack_start(model_row, False, False, 0)
 
-        # Input row
-        # Input row: picker, fetch, chat entry, send button
+        # Chat input row
         input_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        input_row.get_style_context().add_class("input-row")
-
-        # Text entry for chat (single-line, GNOME look)
-        # Model picker (fixed width, left-aligned, wrapped to prevent resizing)
-        input_row.pack_start(combo_box_wrapper, False, False, 0)
-
-        # Fetch models button (left of chat entry)
-        btn_fetch_models = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
-        btn_fetch_models.set_tooltip_text("Fetch models")
-        btn_fetch_models.connect("clicked", self.on_fetch_models_clicked)
-        input_row.pack_start(btn_fetch_models, False, False, 0)
+        input_row.get_style_context().add_class("chat-input-row")
 
         # Chat entry (expands)
         self.entry_chat = Gtk.Entry()
@@ -646,7 +667,6 @@ class MainWindow(Gtk.Window):
         input_row.pack_start(self.entry_chat, True, True, 0)
 
         # Send button
-        # Send button (right-aligned)
         self.btn_send = Gtk.Button.new_from_icon_name("mail-send-symbolic", Gtk.IconSize.BUTTON)
         self.btn_send.set_label("Send")
         self.btn_send.set_always_show_image(True)
@@ -656,14 +676,10 @@ class MainWindow(Gtk.Window):
             self.btn_send.get_style_context().remove_class(cls)
         self.btn_send.get_style_context().add_class(f"accent-{accent}")
         self.btn_send.connect("clicked", self.on_send_clicked)
+        input_row.pack_start(self.btn_send, False, False, 0)
 
-        # Pack input row
-        input_row.pack_start(self.entry_chat, True, True, 0)
-        input_row.pack_end(self.btn_send, False, False, 0)
-
-        vbox.pack_end(input_row, False, False, 0)
         input_area.pack_start(input_row, False, False, 0)
-        vbox.pack_end(input_area, False, False, 0)
+        vbox.pack_start(input_area, False, False, 0)
 
         # Connect Enter key to send message
         self.entry_chat.connect("activate", self.on_send_clicked)
@@ -680,8 +696,8 @@ class MainWindow(Gtk.Window):
         # Convert markdown to Pango markup and set
         markup_text = markdown_to_markup(text)
         bubble_label.set_markup(markup_text)
-        bubble_label.set_max_width_chars(80)
-        bubble_label.set_width_chars(80)
+        bubble_label.set_line_wrap(True)
+        bubble_label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
         bubble_label.set_xalign(0)
         bubble_label.set_hexpand(True)
         bubble_label.set_justify(Gtk.Justification.LEFT)
@@ -690,16 +706,16 @@ class MainWindow(Gtk.Window):
         if role == "user":
             bubble_box.get_style_context().add_class("chat-bubble-user")
             bubble_label.set_xalign(1)
-            hb.pack_end(bubble_box, False, False, 8)
+            hb.pack_start(bubble_box, True, True, 0)
         elif role == "assistant":
             bubble_box.get_style_context().add_class("chat-bubble-assistant")
             bubble_label.set_xalign(0)
-            hb.pack_start(bubble_box, False, False, 8)
+            hb.pack_start(bubble_box, True, True, 0)
         else:
             bubble_box.get_style_context().add_class("chat-bubble-system")
             bubble_label.set_xalign(0.5)
             hb.set_halign(Gtk.Align.CENTER)
-            hb.pack_start(bubble_box, False, False, 8)
+            hb.pack_start(bubble_box, True, True, 0)
 
         print(f"[DEBUG] _append_bubble: role={role}, text={repr(text)}")  # Debug output
 
@@ -1027,37 +1043,24 @@ class MainWindow(Gtk.Window):
         self.model_store.clear()
         for m in models:
             self.model_store.append([m])
+
+        # Also update the settings model store and display model
+        self.model_store_settings.clear()
+        for m in models:
+            self.model_store_settings.append([m])
+
+        # Update display model used by chat combo
+        if hasattr(self, 'display_model'):
+            self.display_model.clear()
+            for m in models:
+                self.display_model.append([m])
+
         if len(models) > 0:
-            # Set entry text to last used model from settings.json if available
-            # Set ComboBox to last used model from settings.json if available
-            settings_path = os.path.join(CONFIG_DIR, "settings.json")
-            last_model = None
-            if os.path.exists(settings_path):
-                try:
-                    with open(settings_path, "r", encoding="utf-8") as f:
-                        settings = json.load(f)
-                    last_model = settings.get("model", None)
-                except Exception as e:
-                    print(f"Error loading settings.json: {e}")
-            entry = self.combo_model.get_child()
-            if entry and last_model:
-                entry.set_text(last_model)
-            if last_model:
-                # Try to select the last model if it exists
-                for idx, row in enumerate(self.display_model):
-                    if row[0] == last_model:
-                        self.combo_model.set_active(idx)
-                        break
-                else:
-                    # If last model not found, select the MIDDLE item in the list
-                    if len(self.display_model) > 0:
-                        middle_index = len(self.display_model) // 2
-                        self.combo_model.set_active(middle_index)
-            else:
-                # No saved model, select the MIDDLE item in the list
-                if len(self.display_model) > 0:
-                    middle_index = len(self.display_model) // 2
-                    self.combo_model.set_active(middle_index)
+            print(f"[DEBUG] Populated models, loading saved model...")
+            # Load and set saved model from settings.json with a slight delay to ensure UI is ready
+            GLib.timeout_add(100, self._load_and_set_saved_model)
+        else:
+            print("[DEBUG] No models available to set")
 
     def set_info(self, text):
         if hasattr(self, "info_label") and self.info_label:
