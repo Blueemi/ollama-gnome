@@ -167,6 +167,18 @@ class MainWindow(Gtk.Window):
         header.set_title(APP_NAME)
         self.set_titlebar(header)
 
+        # --- Square dark/light mode toggle button ---
+        self._manual_dark_mode = None  # None = follow GNOME, True/False = manual override
+
+        self.dark_toggle_btn = Gtk.Button()
+        self.dark_toggle_btn.set_size_request(36, 36)
+        self.dark_toggle_btn.set_can_focus(False)
+        self.dark_toggle_btn.set_relief(Gtk.ReliefStyle.NONE)
+        self.dark_toggle_btn.set_tooltip_text("Toggle dark/light mode")
+        self._update_dark_toggle_icon()
+        self.dark_toggle_btn.connect("clicked", self._on_dark_toggle_clicked)
+        header.pack_start(self.dark_toggle_btn)
+
         # Shared model store and combo for both tabs
         self.model_store_settings = Gtk.ListStore(str)
         self.combo_model_settings = Gtk.ComboBox.new_with_model_and_entry(self.model_store_settings)
@@ -264,6 +276,13 @@ class MainWindow(Gtk.Window):
         # Apply saved accent color (if any)
         self._apply_accent_color(self.settings.get("accent_color", "blue"))
 
+        # Listen for theme changes to update accent if 'default' is selected
+        settings = Gtk.Settings.get_default()
+        def on_theme_changed(settings, param):
+            if self.settings.get("accent_color", "blue") == "default":
+                self._apply_accent_color("default")
+        settings.connect("notify::gtk-application-prefer-dark-theme", on_theme_changed)
+
         # Set last picked model from settings.json after UI is fully built
         GLib.idle_add(self._load_and_set_saved_model)
 
@@ -349,7 +368,6 @@ class MainWindow(Gtk.Window):
                 self.on_send_clicked(self.btn_send)
                 return True  # prevent newline
         return False  # allow normal behavior
-        return accel_group
 
     def _on_keypress_accel(self, widget, event):
         # Map Ctrl+, to open settings and Ctrl+Enter to send
@@ -371,22 +389,34 @@ class MainWindow(Gtk.Window):
     def _apply_gnome_style(self):
         # Follow GNOME Adwaita automatically and honor GNOME dark preference.
         # Priority:
-        # 1) GTK_PREFER_DARK env override (for testing)
-        # 2) org.gnome.desktop.interface color-scheme = prefer-dark
-        # 3) otherwise leave current session/theme as-is
+        # 1) Manual override (via square button)
+        # 2) GTK_PREFER_DARK env override (for testing)
+        # 3) org.gnome.desktop.interface color-scheme = prefer-dark
+        # 4) otherwise leave current session/theme as-is
         settings = Gtk.Settings.get_default()
 
-        # 1) Environment override for easy testing
+        # 1) Manual override (via button)
+        if hasattr(self, "_manual_dark_mode") and self._manual_dark_mode is not None:
+            settings.set_property("gtk-application-prefer-dark-theme", self._manual_dark_mode)
+            # If accent is 'default', update it to match theme
+            if self.settings.get("accent_color", "blue") == "default":
+                self._apply_accent_color("default")
+            return
+
+        # 2) Environment override for easy testing
         try:
             val = os.environ.get("GTK_PREFER_DARK", "").strip().lower()
             if val in ("1", "true", "yes"):
                 settings.set_property("gtk-application-prefer-dark-theme", True)
             elif val in ("0", "false", "no"):
                 settings.set_property("gtk-application-prefer-dark-theme", False)
+            # If accent is 'default', update it to match theme
+            if self.settings.get("accent_color", "blue") == "default":
+                self._apply_accent_color("default")
         except Exception:
             pass
 
-        # 2) Read GNOME interface color-scheme via GSettings if available
+        # 3) Read GNOME interface color-scheme via GSettings if available
         try:
             schema = "org.gnome.desktop.interface"
             key = "color-scheme"
@@ -395,6 +425,9 @@ class MainWindow(Gtk.Window):
                 cs = gsettings.get_string(key)
                 if cs == "prefer-dark":
                     settings.set_property("gtk-application-prefer-dark-theme", True)
+            # If accent is 'default', update it to match theme
+            if self.settings.get("accent_color", "blue") == "default":
+                self._apply_accent_color("default")
         except Exception:
             pass
 
@@ -552,16 +585,24 @@ class MainWindow(Gtk.Window):
         # Update Send button and active tab with selected accent color
         try:
             # Normalize to allowed colors
-            allowed = {"blue", "red", "black", "white", "green"}
+            allowed = {"blue", "red", "green", "default"}
             color = (color_name or "blue").lower()
             if color not in allowed:
                 color = "blue"
-            # Update send button class
-            if hasattr(self, "btn_send") and self.btn_send:
-                ctx = self.btn_send.get_style_context()
-                for cls in ["accent-blue", "accent-red", "accent-black", "accent-white", "accent-green"]:
-                    ctx.remove_class(cls)
-                ctx.add_class(f"accent-{color}")
+
+            # Handle 'default' accent: auto-switch black/white based on theme
+            resolved_color = color
+            if color == "default":
+                settings = Gtk.Settings.get_default()
+                dark = settings.get_property("gtk-application-prefer-dark-theme")
+                resolved_color = "white" if dark else "black"
+
+            # Apply to Send button
+            ctx = self.btn_send.get_style_context()
+            for cls in ["accent-blue", "accent-red", "accent-black", "accent-white", "accent-green"]:
+                ctx.remove_class(cls)
+            ctx.add_class(f"accent-{resolved_color}")
+
             # Update active tab immediately
             self._update_stackswitcher_accent(self.stack, None)
         except Exception:
@@ -671,10 +712,15 @@ class MainWindow(Gtk.Window):
         self.btn_send.set_label("Send")
         self.btn_send.set_always_show_image(True)
         self.btn_send.get_style_context().add_class("suggested-action")
-        accent = (self.settings.get("accent_color", "blue") or "blue").lower()
+        accent = self.settings.get("accent_color", "blue").lower()
+        resolved_accent = accent
+        if accent == "default":
+            settings = Gtk.Settings.get_default()
+            dark = settings.get_property("gtk-application-prefer-dark-theme")
+            resolved_accent = "white" if dark else "black"
         for cls in ["accent-blue", "accent-red", "accent-black", "accent-white", "accent-green"]:
             self.btn_send.get_style_context().remove_class(cls)
-        self.btn_send.get_style_context().add_class(f"accent-{accent}")
+        self.btn_send.get_style_context().add_class(f"accent-{resolved_accent}")
         self.btn_send.connect("clicked", self.on_send_clicked)
         input_row.pack_start(self.btn_send, False, False, 0)
 
@@ -766,7 +812,7 @@ class MainWindow(Gtk.Window):
         lbl_color = Gtk.Label(label="Accent Color:", xalign=0)
         grid.attach(lbl_color, 0, row, 1, 1)
         self.color_store_settings = Gtk.ListStore(str)
-        for color in ["blue", "red", "black", "white", "green"]:
+        for color in ["blue", "red", "green", "default"]:
             self.color_store_settings.append([color])
         self.combo_color_settings = Gtk.ComboBox.new_with_model(self.color_store_settings)
         renderer_text = Gtk.CellRendererText()
@@ -826,7 +872,11 @@ class MainWindow(Gtk.Window):
                         ctx.add_class("suggested-action")
                         # Apply our accent color (no suggested-action)
                         accent = (self.settings.get("accent_color") or "blue").lower()
-                        # Normalize to allowed colors
+                        # Resolve 'default' to 'white' or 'black' based on theme
+                        if accent == "default":
+                            settings = Gtk.Settings.get_default()
+                            dark = settings.get_property("gtk-application-prefer-dark-theme")
+                            accent = "white" if dark else "black"
                         if accent not in {"blue", "red", "black", "white", "green"}:
                             accent = "blue"
                         ctx.add_class(f"accent-{accent}")
@@ -1288,8 +1338,24 @@ class MainWindow(Gtk.Window):
 
     # Using middle item auto-selection approach for optimal list visibility
 
+    def _on_dark_toggle_clicked(self, btn):
+        settings = Gtk.Settings.get_default()
+        # Toggle manual override
+        current = settings.get_property("gtk-application-prefer-dark-theme")
+        self._manual_dark_mode = not current
+        settings.set_property("gtk-application-prefer-dark-theme", self._manual_dark_mode)
+        self._update_dark_toggle_icon()
+
+    def _update_dark_toggle_icon(self):
+        settings = Gtk.Settings.get_default()
+        dark = settings.get_property("gtk-application-prefer-dark-theme")
+        # Use Unicode icons for simplicity (can be replaced with Gtk.Image if desired)
+        if dark:
+            self.dark_toggle_btn.set_label("☾")  # Moon for dark
+        else:
+            self.dark_toggle_btn.set_label("☀")  # Sun for light
+
 def main():
-    ensure_config_dir()
     win = MainWindow()
     win.connect("destroy", Gtk.main_quit)
     win.show_all()
