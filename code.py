@@ -25,6 +25,8 @@
 import os
 import json
 import threading
+import subprocess
+import webbrowser
 from urllib.parse import urljoin
 
 import gi # type: ignore
@@ -34,6 +36,8 @@ from gi.repository import Gtk, Gio, GLib, Gdk, Pango
 import requests
 
 APP_NAME = "OpenAI-compatible Client"
+CURRENT_VERSION = "1.2"  # Update this when releasing new versions
+GITHUB_REPO = "Blueemi/ollama-gnome"
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "ollama_gui")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "settings.json")
 
@@ -119,6 +123,55 @@ def markdown_to_markup(text):
     return text
 
 
+def check_for_updates():
+    """Check GitHub releases for a newer version"""
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        response = requests.get(url, timeout=10)
+        
+        # Handle 404 - no releases exist yet
+        if response.status_code == 404:
+            print(f"[DEBUG] No releases found for {GITHUB_REPO}")
+            return {"has_update": False}
+            
+        response.raise_for_status()
+        
+        data = response.json()
+        latest_version = data.get("tag_name", "").lstrip("v")
+        release_url = data.get("html_url", "")
+        release_name = data.get("name", "")
+        
+        if latest_version and _is_newer_version(latest_version, CURRENT_VERSION):
+            print(f"[DEBUG] Update available: {latest_version} > {CURRENT_VERSION}")
+            return {
+                "has_update": True,
+                "version": latest_version,
+                "url": release_url,
+                "name": release_name
+            }
+        else:
+            print(f"[DEBUG] No update needed. Latest: {latest_version}, Current: {CURRENT_VERSION}")
+            return {"has_update": False}
+            
+    except Exception as e:
+        print(f"[DEBUG] Error checking for updates: {e}")
+        return {"has_update": False}
+
+
+def _is_newer_version(latest, current):
+    """Compare version strings (basic semantic versioning)"""
+    try:
+        def parse_version(v):
+            return tuple(map(int, v.split('.')))
+        
+        latest_parts = parse_version(latest)
+        current_parts = parse_version(current)
+        
+        return latest_parts > current_parts
+    except Exception:
+        return False
+
+
 
 
 def ensure_config_dir():
@@ -142,10 +195,13 @@ def load_settings():
                     settings["auto_load_theme"] = True  # Enable by default
                 if "preferred_theme" not in settings:
                     settings["preferred_theme"] = "auto"  # auto, light, dark
+                # Ensure debug mode setting exists
+                if "debug_mode" not in settings:
+                    settings["debug_mode"] = False  # Disabled by default
                 return settings
         except Exception:
-            return {"favorites": [], "auto_load_theme": True, "preferred_theme": "auto"}
-    return {"favorites": [], "auto_load_theme": True, "preferred_theme": "auto"}
+            return {"favorites": [], "auto_load_theme": True, "preferred_theme": "auto", "debug_mode": False}
+    return {"favorites": [], "auto_load_theme": True, "preferred_theme": "auto", "debug_mode": False}
 
 
 def save_settings(data):
@@ -327,6 +383,175 @@ class MainWindow(Gtk.Window):
                 self._refresh_display_model()
                 # Update favorite button after display model is populated
                 GLib.idle_add(self._update_favorite_button)
+
+        # Check for updates when the app starts
+        self._check_for_updates_async()
+
+    def _check_for_updates_async(self):
+        """Check for updates in a background thread"""
+        def worker():
+            print(f"[DEBUG] Starting update check...")
+            update_info = check_for_updates()
+            debug_mode = self.settings.get("debug_mode", False)
+            print(f"[DEBUG] Debug mode: {debug_mode}")
+            print(f"[DEBUG] Update info: {update_info}")
+            
+            if update_info.get("has_update"):
+                print(f"[DEBUG] Update available, showing notification")
+                GLib.idle_add(self._show_update_notification, update_info)
+            elif debug_mode:
+                # Show "no update" notification in debug mode
+                print(f"[DEBUG] Debug mode active, showing no-update notification")
+                no_update_info = {
+                    "has_update": False,
+                    "version": CURRENT_VERSION,
+                    "debug_mode": True
+                }
+                GLib.idle_add(self._show_update_notification, no_update_info)
+            else:
+                print(f"[DEBUG] No update and debug mode off, not showing notification")
+        
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_update_notification(self, update_info):
+        """Show update notification in the lower-right corner"""
+        # Create the notification window
+        notification = Gtk.Window(type=Gtk.WindowType.POPUP)
+        
+        is_debug_no_update = update_info.get("debug_mode", False) and not update_info.get("has_update", False)
+        
+        if is_debug_no_update:
+            notification.set_title("No Update Available")
+        else:
+            notification.set_title("Update Available")
+            
+        notification.set_decorated(False)
+        notification.set_resizable(False)
+        notification.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
+        notification.set_skip_taskbar_hint(True)
+        notification.set_skip_pager_hint(True)
+        notification.set_keep_above(True)
+
+        # Position in lower-right corner
+        screen = notification.get_screen()
+        screen_width = screen.get_width()
+        screen_height = screen.get_height()
+        
+        # Set size and position
+        notification_width = 350
+        notification_height = 120
+        x = screen_width - notification_width - 20
+        y = screen_height - notification_height - 60  # Account for taskbar
+        
+        notification.set_default_size(notification_width, notification_height)
+        notification.move(x, y)
+
+        # Create content
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        main_box.set_margin_top(12)
+        main_box.set_margin_bottom(12)
+        main_box.set_margin_start(12)
+        main_box.set_margin_end(12)
+
+        # Header with icon and title
+        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        
+        # Update icon
+        if is_debug_no_update:
+            icon = Gtk.Image.new_from_icon_name("dialog-information", Gtk.IconSize.LARGE_TOOLBAR)
+            title_text = "<b>No Update Available (Debug)</b>"
+        else:
+            icon = Gtk.Image.new_from_icon_name("software-update-available", Gtk.IconSize.LARGE_TOOLBAR)
+            title_text = "<b>Update Available!</b>"
+            
+        header_box.pack_start(icon, False, False, 0)
+        
+        # Title
+        title_label = Gtk.Label()
+        title_label.set_markup(title_text)
+        title_label.set_xalign(0)
+        header_box.pack_start(title_label, True, True, 0)
+
+        # Close button
+        close_btn = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.BUTTON)
+        close_btn.set_relief(Gtk.ReliefStyle.NONE)
+        close_btn.connect("clicked", lambda btn: notification.destroy())
+        header_box.pack_end(close_btn, False, False, 0)
+
+        main_box.pack_start(header_box, False, False, 0)
+
+        # Version info
+        if is_debug_no_update:
+            version_text = f"You are running the latest version ({update_info['version']})"
+        else:
+            version_text = f"Version {update_info['version']} is now available"
+            if update_info.get('name'):
+                version_text = f"{update_info['name']} ({update_info['version']}) is now available"
+        
+        version_label = Gtk.Label(label=version_text)
+        version_label.set_line_wrap(True)
+        version_label.set_xalign(0)
+        main_box.pack_start(version_label, False, False, 0)
+
+        # Buttons
+        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        button_box.set_halign(Gtk.Align.END)
+
+        if not is_debug_no_update:
+            # Download button (only for real updates)
+            download_btn = Gtk.Button(label="Download")
+            download_btn.get_style_context().add_class("suggested-action")
+            download_btn.connect("clicked", lambda btn: self._open_release_url(update_info['url'], notification))
+            button_box.pack_start(download_btn, False, False, 0)
+
+        # Close button
+        close_button_text = "OK" if is_debug_no_update else "Later"
+        later_btn = Gtk.Button(label=close_button_text)
+        later_btn.connect("clicked", lambda btn: notification.destroy())
+        button_box.pack_start(later_btn, False, False, 0)
+
+        main_box.pack_end(button_box, False, False, 0)
+
+        # Style the notification
+        notification.add(main_box)
+        
+        # Add some styling
+        css = b"""
+        window.notification {
+            background-color: @theme_bg_color;
+            border: 1px solid @borders;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+        """
+        
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css)
+        context = notification.get_style_context()
+        context.add_class("notification")
+        context.add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        notification.show_all()
+
+        # Auto-hide (longer timeout for debug mode)
+        timeout_seconds = 20 if is_debug_no_update else 10
+        GLib.timeout_add_seconds(timeout_seconds, lambda: notification.destroy() if notification.get_window() else False)
+
+        return False
+
+    def _open_release_url(self, url, notification):
+        """Open the release URL in the default browser"""
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            print(f"[DEBUG] Error opening URL: {e}")
+            # Fallback to system command
+            try:
+                subprocess.run(["xdg-open", url], check=True)
+            except Exception as e2:
+                print(f"[DEBUG] Error with xdg-open: {e2}")
+        
+        notification.destroy()
 
     def _heart_cell_data_func(self, column, cell, model, iter_, data):
         """Custom cell data function to show heart icon for favorites."""
@@ -1133,6 +1358,17 @@ class MainWindow(Gtk.Window):
             save_settings(self.settings)
             self._apply_accent_color(selected)
         self.combo_color_settings.connect("changed", on_color_changed)
+        row += 1
+
+        # Debug mode toggle
+        lbl_debug = Gtk.Label(label="Debug Mode:", xalign=0)
+        grid.attach(lbl_debug, 0, row, 1, 1)
+        self.switch_debug_mode = Gtk.Switch()
+        self.switch_debug_mode.set_active(self.settings.get("debug_mode", False))
+        self.switch_debug_mode.set_hexpand(False)
+        self.switch_debug_mode.set_halign(Gtk.Align.START)
+        self.switch_debug_mode.connect("notify::active", self._on_debug_mode_toggled)
+        grid.attach(self.switch_debug_mode, 1, row, 1, 1)
 
         btn_save = Gtk.Button(label="Save Settings")
         btn_save.connect("clicked", self.on_save_clicked)
@@ -1206,6 +1442,7 @@ class MainWindow(Gtk.Window):
         # Read theme settings
         auto_load_theme = True
         preferred_theme = "auto"
+        debug_mode = False
         if hasattr(self, "switch_auto_theme"):
             auto_load_theme = self.switch_auto_theme.get_active()
         if hasattr(self, "combo_theme_settings") and self.combo_theme_settings:
@@ -1215,6 +1452,8 @@ class MainWindow(Gtk.Window):
                     preferred_theme = self.theme_store_settings[idx][0]
                 except Exception:
                     pass
+        if hasattr(self, "switch_debug_mode"):
+            debug_mode = self.switch_debug_mode.get_active()
 
         if base_url and not base_url.endswith("/"):
             base_url += "/"
@@ -1231,6 +1470,7 @@ class MainWindow(Gtk.Window):
         # Save theme settings
         self.settings["auto_load_theme"] = auto_load_theme
         self.settings["preferred_theme"] = preferred_theme
+        self.settings["debug_mode"] = debug_mode
 
         save_settings(self.settings)
 
@@ -1688,6 +1928,13 @@ class MainWindow(Gtk.Window):
             self._update_dark_toggle_icon()
         
         print(f"[DEBUG] Auto-load theme toggled: {is_active}")
+
+    def _on_debug_mode_toggled(self, switch, gparam):
+        """Handle debug mode toggle"""
+        is_active = switch.get_active()
+        self.settings["debug_mode"] = is_active
+        save_settings(self.settings)
+        print(f"[DEBUG] Debug mode toggled: {is_active}")
 
     def _on_dark_toggle_clicked(self, btn):
         settings = Gtk.Settings.get_default()
