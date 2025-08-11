@@ -738,6 +738,42 @@ class MainWindow(Gtk.Window):
         stackswitcher > button.togglebutton.accent-green * {
             color: inherit;
         }
+        /* Switch accent colors for active state */
+        switch.accent-blue:checked slider {
+            background-color: #1c71d8;
+            border-color: #1c71d8;
+        }
+        switch.accent-red:checked slider {
+            background-color: #c01c28;
+            border-color: #c01c28;
+        }
+        switch.accent-black:checked slider {
+            background-color: #000000;
+            border-color: #000000;
+        }
+        switch.accent-white:checked slider {
+            background-color: #ffffff;
+            border-color: #ffffff;
+        }
+        switch.accent-green:checked slider {
+            background-color: #2ec27e;
+            border-color: #2ec27e;
+        }
+        switch.accent-blue:checked {
+            background-color: rgba(28, 113, 216, 0.3);
+        }
+        switch.accent-red:checked {
+            background-color: rgba(192, 28, 40, 0.3);
+        }
+        switch.accent-black:checked {
+            background-color: rgba(0, 0, 0, 0.3);
+        }
+        switch.accent-white:checked {
+            background-color: rgba(255, 255, 255, 0.3);
+        }
+        switch.accent-green:checked {
+            background-color: rgba(46, 194, 126, 0.3);
+        }
         """
         provider = Gtk.CssProvider()
         provider.load_from_data(css)
@@ -767,6 +803,13 @@ class MainWindow(Gtk.Window):
             for cls in ["accent-blue", "accent-red", "accent-black", "accent-white", "accent-green"]:
                 ctx.remove_class(cls)
             ctx.add_class(f"accent-{resolved_color}")
+
+            # Apply to auto-load theme switch if it exists
+            if hasattr(self, "switch_auto_theme") and self.switch_auto_theme:
+                switch_ctx = self.switch_auto_theme.get_style_context()
+                for cls in ["accent-blue", "accent-red", "accent-black", "accent-white", "accent-green"]:
+                    switch_ctx.remove_class(cls)
+                switch_ctx.add_class(f"accent-{resolved_color}")
 
             # Update active tab immediately
             self._update_stackswitcher_accent(self.stack, None)
@@ -1000,6 +1043,8 @@ class MainWindow(Gtk.Window):
         grid.attach(lbl_auto_theme, 0, row, 1, 1)
         self.switch_auto_theme = Gtk.Switch()
         self.switch_auto_theme.set_active(self.settings.get("auto_load_theme", True))
+        self.switch_auto_theme.set_hexpand(False)
+        self.switch_auto_theme.set_halign(Gtk.Align.START)
         self.switch_auto_theme.connect("notify::active", self._on_auto_theme_toggled)
         grid.attach(self.switch_auto_theme, 1, row, 1, 1)
         row += 1
