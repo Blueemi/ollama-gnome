@@ -27,7 +27,7 @@ import json
 import threading
 from urllib.parse import urljoin
 
-import gi
+import gi # type: ignore
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gio, GLib, Gdk, Pango
 
@@ -133,10 +133,19 @@ def load_settings():
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                settings = json.load(f)
+                # Ensure favorites list exists
+                if "favorites" not in settings:
+                    settings["favorites"] = []
+                # Ensure theme settings exist
+                if "auto_load_theme" not in settings:
+                    settings["auto_load_theme"] = True  # Enable by default
+                if "preferred_theme" not in settings:
+                    settings["preferred_theme"] = "auto"  # auto, light, dark
+                return settings
         except Exception:
-            return {}
-    return {}
+            return {"favorites": [], "auto_load_theme": True, "preferred_theme": "auto"}
+    return {"favorites": [], "auto_load_theme": True, "preferred_theme": "auto"}
 
 
 def save_settings(data):
@@ -209,7 +218,23 @@ class MainWindow(Gtk.Window):
         if os.path.exists(models_path):
             try:
                 with open(models_path, "r", encoding="utf-8") as f:
-                    models = json.load(f)
+                    data = json.load(f)
+                
+                # Handle both old format (list) and new format (dict with models and favorites)
+                if isinstance(data, list):
+                    # Old format - just a list of models
+                    models = data
+                    favorites = []
+                elif isinstance(data, dict):
+                    # New format - dict with models and favorites
+                    models = data.get("models", [])
+                    favorites = data.get("favorites", [])
+                    # Update settings with loaded favorites
+                    self.settings["favorites"] = favorites
+                else:
+                    models = []
+                    favorites = []
+                
                 self.model_store_settings.clear()
                 for m in models:
                     self.model_store_settings.append([m])
@@ -217,8 +242,9 @@ class MainWindow(Gtk.Window):
                 if hasattr(self, 'display_model'):
                     self.display_model.clear()
                     for m in models:
-                        self.display_model.append([m])
-                print(f"[DEBUG] Loaded {len(models)} models from models.json")
+                        is_favorite = m in favorites
+                        self.display_model.append([m, is_favorite])
+                print(f"[DEBUG] Loaded {len(models)} models and {len(favorites)} favorites from models.json")
             except Exception as e:
                 print(f"Error loading models.json: {e}")
 
@@ -285,13 +311,123 @@ class MainWindow(Gtk.Window):
 
         # Set last picked model from settings.json after UI is fully built
         GLib.idle_add(self._load_and_set_saved_model)
+        # Ensure favorite button is updated after everything is initialized
+        GLib.timeout_add(300, self._update_favorite_button)
 
         # Also populate display model with initial models if we have them
         if len(self.model_store_settings) > 0:
             if hasattr(self, 'display_model'):
                 self.display_model.clear()
+                favorites = self.settings.get("favorites", [])
                 for row in self.model_store_settings:
-                    self.display_model.append([row[0]])
+                    model_name = row[0]
+                    is_favorite = model_name in favorites
+                    self.display_model.append([model_name, is_favorite])
+                # Apply proper sorting with favorites first
+                self._refresh_display_model()
+                # Update favorite button after display model is populated
+                GLib.idle_add(self._update_favorite_button)
+
+    def _heart_cell_data_func(self, column, cell, model, iter_, data):
+        """Custom cell data function to show heart icon for favorites."""
+        is_favorite = model[iter_][1]  # Second column is favorite status
+        if is_favorite:
+            cell.set_property("text", "♥")  # Filled heart
+            cell.set_property("foreground", "#e01b24")  # Red color
+        else:
+            cell.set_property("text", "♡")  # Empty heart
+            cell.set_property("foreground", "#9a9996")  # Gray color
+
+    def _update_favorite_button(self):
+        """Update the favorite button based on current selection."""
+        if not hasattr(self, 'combo_model') or not hasattr(self, 'btn_favorite'):
+            print("[DEBUG] _update_favorite_button: combo_model or btn_favorite not available yet")
+            return False  # For GLib.timeout_add compatibility
+        
+        idx = self.combo_model.get_active()
+        print(f"[DEBUG] _update_favorite_button: active index = {idx}, display_model length = {len(self.display_model) if hasattr(self, 'display_model') else 'N/A'}")
+        
+        if idx >= 0 and idx < len(self.display_model):
+            model_name = self.display_model[idx][0]
+            is_favorite = model_name in self.settings.get("favorites", [])
+            print(f"[DEBUG] _update_favorite_button: model '{model_name}' is_favorite = {is_favorite}")
+            
+            if is_favorite:
+                self.btn_favorite.set_label("♥")  # Filled heart
+                self.btn_favorite.get_style_context().add_class("active")
+            else:
+                self.btn_favorite.set_label("♡")  # Empty heart
+                self.btn_favorite.get_style_context().remove_class("active")
+        else:
+            print("[DEBUG] _update_favorite_button: no valid selection, setting to empty heart")
+            self.btn_favorite.set_label("♡")
+            self.btn_favorite.get_style_context().remove_class("active")
+        
+        return False  # For GLib.timeout_add compatibility
+
+    def _save_models_with_favorites(self, models):
+        """Save models list along with current favorites to models.json"""
+        models_path = os.path.join(CONFIG_DIR, "models.json")
+        try:
+            favorites = self.settings.get("favorites", [])
+            data = {
+                "models": models,
+                "favorites": favorites
+            }
+            with open(models_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            print(f"[DEBUG] Saved {len(models)} models and {len(favorites)} favorites to models.json")
+        except Exception as save_err:
+            print(f"Error saving models.json: {save_err}")
+
+    def _on_favorite_clicked(self, button):
+        """Toggle favorite status of the currently selected model."""
+        idx = self.combo_model.get_active()
+        if idx < 0 or idx >= len(self.display_model):
+            return
+        
+        model_name = self.display_model[idx][0]
+        favorites = self.settings.get("favorites", [])
+        
+        if model_name in favorites:
+            # Remove from favorites
+            favorites.remove(model_name)
+        else:
+            # Add to favorites
+            favorites.append(model_name)
+        
+        self.settings["favorites"] = favorites
+        save_settings(self.settings)
+        
+        # Also save to models.json to persist favorites
+        current_models = []
+        for row in self.model_store_settings:
+            current_models.append(row[0])
+        self._save_models_with_favorites(current_models)
+        
+        # Update the display model and resort
+        self._refresh_display_model()
+        self._update_favorite_button()
+
+    def _refresh_display_model(self):
+        """Refresh the display model with current favorites and sorting."""
+        # Store current selection
+        current_model = None
+        idx = self.combo_model.get_active()
+        if idx >= 0 and idx < len(self.display_model):
+            current_model = self.display_model[idx][0]
+        
+        # Repopulate display model
+        self._populate_display_model()
+        
+        # Restore selection if possible
+        if current_model:
+            for i, row in enumerate(self.display_model):
+                if row[0] == current_model:
+                    self._updating_combo = True
+                    self.combo_model.set_active(i)
+                    self._updating_combo = False
+                    break
 
     def _set_model_picker_text(self, model_name):
         """Set the model picker selection to the specified model name"""
@@ -343,6 +479,9 @@ class MainWindow(Gtk.Window):
                         print(f"[DEBUG] Model '{saved_model}' not found in model_store_settings")
 
                 self._updating_combo = False
+                
+                # Update favorite button after setting the model selection
+                self._update_favorite_button()
                 print(f"[DEBUG] Loaded saved model: {saved_model}")
             else:
                 print("[DEBUG] No saved model found in settings")
@@ -390,9 +529,10 @@ class MainWindow(Gtk.Window):
         # Follow GNOME Adwaita automatically and honor GNOME dark preference.
         # Priority:
         # 1) Manual override (via square button)
-        # 2) GTK_PREFER_DARK env override (for testing)
-        # 3) org.gnome.desktop.interface color-scheme = prefer-dark
-        # 4) otherwise leave current session/theme as-is
+        # 2) Saved theme preference (if auto-load is enabled)
+        # 3) GTK_PREFER_DARK env override (for testing)
+        # 4) org.gnome.desktop.interface color-scheme = prefer-dark
+        # 5) otherwise leave current session/theme as-is
         settings = Gtk.Settings.get_default()
 
         # 1) Manual override (via button)
@@ -403,7 +543,22 @@ class MainWindow(Gtk.Window):
                 self._apply_accent_color("default")
             return
 
-        # 2) Environment override for easy testing
+        # 2) Saved theme preference (if auto-load is enabled)
+        if self.settings.get("auto_load_theme", True):
+            preferred_theme = self.settings.get("preferred_theme", "auto")
+            if preferred_theme == "dark":
+                settings.set_property("gtk-application-prefer-dark-theme", True)
+                if self.settings.get("accent_color", "blue") == "default":
+                    self._apply_accent_color("default")
+                return
+            elif preferred_theme == "light":
+                settings.set_property("gtk-application-prefer-dark-theme", False)
+                if self.settings.get("accent_color", "blue") == "default":
+                    self._apply_accent_color("default")
+                return
+            # If preferred_theme is "auto", continue to system detection
+
+        # 3) Environment override for easy testing
         try:
             val = os.environ.get("GTK_PREFER_DARK", "").strip().lower()
             if val in ("1", "true", "yes"):
@@ -416,7 +571,7 @@ class MainWindow(Gtk.Window):
         except Exception:
             pass
 
-        # 3) Read GNOME interface color-scheme via GSettings if available
+        # 4) Read GNOME interface color-scheme via GSettings if available
         try:
             schema = "org.gnome.desktop.interface"
             key = "color-scheme"
@@ -445,6 +600,16 @@ class MainWindow(Gtk.Window):
         .bubble-assistant { margin-right: 48px; }
         .bubble-system { margin-left: 96px; margin-right: 96px; }
         .input-row { padding: 8px; }
+        /* Favorite button styling */
+        .favorite-button {
+            font-size: 16px;
+            min-width: 36px;
+            min-height: 36px;
+            padding: 0;
+        }
+        .favorite-button.active {
+            color: #e01b24;
+        }
         /* Accent: fully override theme painting for buttons and StackSwitcher toggle buttons */
         /* Button accents (apply to GtkButton across states and its contents) */
         button.accent-blue,
@@ -573,6 +738,42 @@ class MainWindow(Gtk.Window):
         stackswitcher > button.togglebutton.accent-green * {
             color: inherit;
         }
+        /* Switch accent colors for active state */
+        switch.accent-blue:checked slider {
+            background-color: #1c71d8;
+            border-color: #1c71d8;
+        }
+        switch.accent-red:checked slider {
+            background-color: #c01c28;
+            border-color: #c01c28;
+        }
+        switch.accent-black:checked slider {
+            background-color: #000000;
+            border-color: #000000;
+        }
+        switch.accent-white:checked slider {
+            background-color: #ffffff;
+            border-color: #ffffff;
+        }
+        switch.accent-green:checked slider {
+            background-color: #2ec27e;
+            border-color: #2ec27e;
+        }
+        switch.accent-blue:checked {
+            background-color: rgba(28, 113, 216, 0.3);
+        }
+        switch.accent-red:checked {
+            background-color: rgba(192, 28, 40, 0.3);
+        }
+        switch.accent-black:checked {
+            background-color: rgba(0, 0, 0, 0.3);
+        }
+        switch.accent-white:checked {
+            background-color: rgba(255, 255, 255, 0.3);
+        }
+        switch.accent-green:checked {
+            background-color: rgba(46, 194, 126, 0.3);
+        }
         """
         provider = Gtk.CssProvider()
         provider.load_from_data(css)
@@ -590,18 +791,25 @@ class MainWindow(Gtk.Window):
             if color not in allowed:
                 color = "blue"
 
-            # Handle 'default' accent: auto-switch black/white based on theme
+            # Handle 'default' accent: black on light mode, white on dark mode
             resolved_color = color
             if color == "default":
                 settings = Gtk.Settings.get_default()
                 dark = settings.get_property("gtk-application-prefer-dark-theme")
-                resolved_color = "white" if dark else "black"
+                resolved_color = "white" if dark else "black"  # White on dark, black on light
 
             # Apply to Send button
             ctx = self.btn_send.get_style_context()
             for cls in ["accent-blue", "accent-red", "accent-black", "accent-white", "accent-green"]:
                 ctx.remove_class(cls)
             ctx.add_class(f"accent-{resolved_color}")
+
+            # Apply to auto-load theme switch if it exists
+            if hasattr(self, "switch_auto_theme") and self.switch_auto_theme:
+                switch_ctx = self.switch_auto_theme.get_style_context()
+                for cls in ["accent-blue", "accent-red", "accent-black", "accent-white", "accent-green"]:
+                    switch_ctx.remove_class(cls)
+                switch_ctx.add_class(f"accent-{resolved_color}")
 
             # Update active tab immediately
             self._update_stackswitcher_accent(self.stack, None)
@@ -638,18 +846,31 @@ class MainWindow(Gtk.Window):
         self.model_filter.set_visible_func(self._model_filter_func)
 
         # Create a temporary limited model for display (prevents empty gaps)
-        self.display_model = Gtk.ListStore(str)
+        # Now includes favorite status: [model_name, is_favorite]
+        self.display_model = Gtk.ListStore(str, bool)
         # Initialize display model with all items from model store
+        favorites = self.settings.get("favorites", [])
         for row in self.model_store:
-            self.display_model.append([row[0]])
+            model_name = row[0]
+            is_favorite = model_name in favorites
+            self.display_model.append([model_name, is_favorite])
         print(f"[DEBUG] Initialized display_model with {len(self.display_model)} models")
 
-        # Non-editable ComboBox with CellRendererText, using the display model
+        # Create custom ComboBox with heart icons for favorites
         self.combo_model = Gtk.ComboBox.new_with_model(self.display_model)
+        
+        # Custom cell renderer for model name
         renderer_text = Gtk.CellRendererText()
         renderer_text.set_property("ellipsize", 3)  # Pango.EllipsizeMode.END
         self.combo_model.pack_start(renderer_text, True)
         self.combo_model.add_attribute(renderer_text, "text", 0)
+        
+        # Custom cell renderer for heart icon
+        renderer_heart = Gtk.CellRendererText()
+        renderer_heart.set_property("xalign", 1.0)  # Right-align
+        self.combo_model.pack_end(renderer_heart, False)
+        self.combo_model.set_cell_data_func(renderer_heart, self._heart_cell_data_func)
+        
         self.combo_model.set_hexpand(True)
         self.combo_model.set_halign(Gtk.Align.FILL)
 
@@ -676,6 +897,14 @@ class MainWindow(Gtk.Window):
         btn_fetch_models.set_tooltip_text("Fetch models")
         btn_fetch_models.connect("clicked", self.on_fetch_models_clicked)
 
+        # Create favorite toggle button for the selected model
+        self.btn_favorite = Gtk.Button()
+        self.btn_favorite.set_label("♡")  # Empty heart
+        self.btn_favorite.set_tooltip_text("Toggle favorite")
+        self.btn_favorite.get_style_context().add_class("favorite-button")
+        self.btn_favorite.connect("clicked", self._on_favorite_clicked)
+        self._update_favorite_button()
+
         # Input area with consistent spacing and alignment
         input_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         input_area.get_style_context().add_class("chat-input-area")
@@ -694,6 +923,7 @@ class MainWindow(Gtk.Window):
         model_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         model_row.get_style_context().add_class("chat-input-row")
         model_row.pack_start(self.combo_model, True, True, 0)
+        model_row.pack_start(self.btn_favorite, False, False, 0)
         model_row.pack_start(btn_fetch_models, False, False, 0)
         input_area.pack_start(model_row, False, False, 0)
 
@@ -717,7 +947,7 @@ class MainWindow(Gtk.Window):
         if accent == "default":
             settings = Gtk.Settings.get_default()
             dark = settings.get_property("gtk-application-prefer-dark-theme")
-            resolved_accent = "white" if dark else "black"
+            resolved_accent = "white" if dark else "black"  # White on dark, black on light
         for cls in ["accent-blue", "accent-red", "accent-black", "accent-white", "accent-green"]:
             self.btn_send.get_style_context().remove_class(cls)
         self.btn_send.get_style_context().add_class(f"accent-{resolved_accent}")
@@ -807,6 +1037,63 @@ class MainWindow(Gtk.Window):
         row += 1
 
         # Model picker removed from settings tab
+
+        # Theme preference toggle
+        lbl_auto_theme = Gtk.Label(label="Auto-load Theme:", xalign=0)
+        grid.attach(lbl_auto_theme, 0, row, 1, 1)
+        self.switch_auto_theme = Gtk.Switch()
+        self.switch_auto_theme.set_active(self.settings.get("auto_load_theme", True))
+        self.switch_auto_theme.set_hexpand(False)
+        self.switch_auto_theme.set_halign(Gtk.Align.START)
+        self.switch_auto_theme.connect("notify::active", self._on_auto_theme_toggled)
+        grid.attach(self.switch_auto_theme, 1, row, 1, 1)
+        row += 1
+
+        # Theme preference picker
+        lbl_theme = Gtk.Label(label="Preferred Theme:", xalign=0)
+        grid.attach(lbl_theme, 0, row, 1, 1)
+        self.theme_store_settings = Gtk.ListStore(str)
+        for theme in ["auto", "light", "dark"]:
+            self.theme_store_settings.append([theme])
+        self.combo_theme_settings = Gtk.ComboBox.new_with_model(self.theme_store_settings)
+        renderer_theme = Gtk.CellRendererText()
+        self.combo_theme_settings.pack_start(renderer_theme, True)
+        self.combo_theme_settings.add_attribute(renderer_theme, "text", 0)
+        grid.attach(self.combo_theme_settings, 1, row, 1, 1)
+        # Restore saved theme
+        saved_theme = self.settings.get("preferred_theme", "auto")
+        def set_active_theme_in_combo(combo, store, theme):
+            idx = 0
+            found = False
+            for row_it in store:
+                if row_it[0] == theme:
+                    combo.set_active(idx)
+                    found = True
+                    break
+                idx += 1
+            if not found:
+                combo.set_active(0)
+        set_active_theme_in_combo(self.combo_theme_settings, self.theme_store_settings, saved_theme)
+        # React on change: immediately apply theme and persist
+        def on_theme_changed(combo):
+            idx = combo.get_active()
+            if idx is None or idx < 0:
+                return
+            try:
+                selected = self.theme_store_settings[idx][0]
+            except Exception:
+                selected = "auto"
+            self.settings["preferred_theme"] = selected
+            save_settings(self.settings)
+            # Reset manual override and apply new theme
+            self._manual_dark_mode = None
+            self._apply_gnome_style()
+            self._update_dark_toggle_icon()
+            print(f"[DEBUG] Theme preference changed to: {selected}")
+        self.combo_theme_settings.connect("changed", on_theme_changed)
+        # Enable/disable theme combo based on auto-load setting
+        self.combo_theme_settings.set_sensitive(self.settings.get("auto_load_theme", True))
+        row += 1
 
         # Accent color picker (simple combo)
         lbl_color = Gtk.Label(label="Accent Color:", xalign=0)
@@ -916,6 +1203,19 @@ class MainWindow(Gtk.Window):
                 except Exception:
                     pass
 
+        # Read theme settings
+        auto_load_theme = True
+        preferred_theme = "auto"
+        if hasattr(self, "switch_auto_theme"):
+            auto_load_theme = self.switch_auto_theme.get_active()
+        if hasattr(self, "combo_theme_settings") and self.combo_theme_settings:
+            idx = self.combo_theme_settings.get_active()
+            if idx is not None and idx >= 0 and hasattr(self, "theme_store_settings"):
+                try:
+                    preferred_theme = self.theme_store_settings[idx][0]
+                except Exception:
+                    pass
+
         if base_url and not base_url.endswith("/"):
             base_url += "/"
 
@@ -927,6 +1227,10 @@ class MainWindow(Gtk.Window):
             self.settings["accent_color"] = accent_color
         if system_prompt:
             self.settings["system_prompt"] = system_prompt
+        
+        # Save theme settings
+        self.settings["auto_load_theme"] = auto_load_theme
+        self.settings["preferred_theme"] = preferred_theme
 
         save_settings(self.settings)
 
@@ -959,7 +1263,24 @@ class MainWindow(Gtk.Window):
         if os.path.exists(models_path):
             try:
                 with open(models_path, "r", encoding="utf-8") as f:
-                    models = json.load(f)
+                    data = json.load(f)
+                
+                # Handle both old format (list) and new format (dict with models and favorites)
+                if isinstance(data, list):
+                    # Old format - just a list of models
+                    models = data
+                    favorites = []
+                elif isinstance(data, dict):
+                    # New format - dict with models and favorites
+                    models = data.get("models", [])
+                    favorites = data.get("favorites", [])
+                    # Update settings with loaded favorites
+                    self.settings["favorites"] = favorites
+                    save_settings(self.settings)
+                else:
+                    models = []
+                    favorites = []
+                
                 # Deduplicate preserving order
                 seen = set()
                 unique = []
@@ -1008,12 +1329,9 @@ class MainWindow(Gtk.Window):
             if m not in seen:
                 unique.append(m)
                 seen.add(m)
-        # Save to models.json for future use
-        try:
-            with open(models_path, "w", encoding="utf-8") as f:
-                json.dump(unique, f, indent=2)
-        except Exception as save_err:
-            print(f"Error saving models.json: {save_err}")
+        
+        # Save to models.json with favorites for future use
+        self._save_models_with_favorites(unique)
         return unique
 
     def _fetch_models_into_settings(self, _btn):
@@ -1023,13 +1341,7 @@ class MainWindow(Gtk.Window):
         def worker():
             try:
                 models = self.fetch_models()
-                # Save models to models.json in config dir
-                try:
-                    models_path = os.path.join(CONFIG_DIR, "models.json")
-                    with open(models_path, "w", encoding="utf-8") as f:
-                        json.dump(models, f, indent=2)
-                except Exception as save_err:
-                    print(f"Error saving models.json: {save_err}")
+                # Models and favorites are already saved in fetch_models via _save_models_with_favorites
 
                 def update():
                     if hasattr(self, "model_store_settings"):
@@ -1075,13 +1387,7 @@ class MainWindow(Gtk.Window):
         def worker():
             try:
                 models = self.fetch_models()
-                # Save models to models.json in config dir
-                try:
-                    models_path = os.path.join(CONFIG_DIR, "models.json")
-                    with open(models_path, "w", encoding="utf-8") as f:
-                        json.dump(models, f, indent=2)
-                except Exception as save_err:
-                    print(f"Error saving models.json: {save_err}")
+                # Models and favorites are already saved in fetch_models via _save_models_with_favorites
                 GLib.idle_add(self.populate_models, models)
                 GLib.idle_add(self.set_info, f"Fetched {len(models)} model(s)")
             except Exception as e:
@@ -1099,16 +1405,22 @@ class MainWindow(Gtk.Window):
         for m in models:
             self.model_store_settings.append([m])
 
-        # Update display model used by chat combo
+        # Update display model used by chat combo with favorites
         if hasattr(self, 'display_model'):
             self.display_model.clear()
+            favorites = self.settings.get("favorites", [])
             for m in models:
-                self.display_model.append([m])
+                is_favorite = m in favorites
+                self.display_model.append([m, is_favorite])
 
         if len(models) > 0:
             print(f"[DEBUG] Populated models, loading saved model...")
+            # Refresh display model to apply proper sorting
+            self._refresh_display_model()
             # Load and set saved model from settings.json with a slight delay to ensure UI is ready
             GLib.timeout_add(100, self._load_and_set_saved_model)
+            # Update favorite button after everything is loaded
+            GLib.timeout_add(200, self._update_favorite_button)
         else:
             print("[DEBUG] No models available to set")
 
@@ -1131,7 +1443,7 @@ class MainWindow(Gtk.Window):
         if hasattr(self, "combo_model") and self.combo_model:
             idx = self.combo_model.get_active()
             if idx is not None and idx >= 0 and idx < len(self.display_model):
-                return self.display_model[idx][0]
+                return self.display_model[idx][0]  # First column is model name
         return ""
 
     def on_send_clicked(self, _button):
@@ -1272,6 +1584,9 @@ class MainWindow(Gtk.Window):
 
             # Clear flag
             self._updating_combo = False
+            
+            # Update favorite button after selection change
+            self._update_favorite_button()
 
     def _model_filter_func(self, model, iter_, data=None):
         """Filter function for model picker based on search entry."""
@@ -1284,40 +1599,55 @@ class MainWindow(Gtk.Window):
         return search in value
 
     def _populate_display_model(self):
-        """Populate the display model with filtered results only."""
+        """Populate the display model with filtered results, favorites first."""
         # Clear the display model
         self.display_model.clear()
 
         # Get search text for prioritization
         search_text = getattr(self, '_model_search_text', '').lower()
+        favorites = self.settings.get("favorites", [])
 
         # Collect all filtered items
         filtered_items = []
         for row in self.model_filter:
             filtered_items.append(row[0])
 
+        # Separate favorites and non-favorites
+        favorite_items = []
+        non_favorite_items = []
+        
+        for item in filtered_items:
+            if item in favorites:
+                favorite_items.append(item)
+            else:
+                non_favorite_items.append(item)
+
         if search_text:
-            # Sort filtered items: exact matches first, then starts with, then contains
-            exact_matches = []
-            starts_with = []
-            contains = []
+            # Sort both lists: exact matches first, then starts with, then contains
+            def sort_by_search(items):
+                exact_matches = []
+                starts_with = []
+                contains = []
+                
+                for item in items:
+                    item_lower = item.lower()
+                    if item_lower == search_text:
+                        exact_matches.append(item)
+                    elif item_lower.startswith(search_text):
+                        starts_with.append(item)
+                    else:
+                        contains.append(item)
+                
+                return exact_matches + starts_with + contains
+            
+            favorite_items = sort_by_search(favorite_items)
+            non_favorite_items = sort_by_search(non_favorite_items)
 
-            for item in filtered_items:
-                item_lower = item.lower()
-                if item_lower == search_text:
-                    exact_matches.append(item)
-                elif item_lower.startswith(search_text):
-                    starts_with.append(item)
-                else:
-                    contains.append(item)
-
-            # Add items in priority order: exact matches at top
-            for item in exact_matches + starts_with + contains:
-                self.display_model.append([item])
-        else:
-            # No search text, add all filtered items in original order
-            for item in filtered_items:
-                self.display_model.append([item])
+        # Add favorites first, then non-favorites
+        for item in favorite_items:
+            self.display_model.append([item, True])
+        for item in non_favorite_items:
+            self.display_model.append([item, False])
 
     def _on_combo_model_changed(self, combo):
         """Handle combo box model changes - simplified to prevent recursion."""
@@ -1335,8 +1665,29 @@ class MainWindow(Gtk.Window):
                 entry = self.combo_model_settings.get_child()
                 if entry:
                     entry.set_text(selected_model)
+        
+        # Update favorite button
+        self._update_favorite_button()
 
     # Using middle item auto-selection approach for optimal list visibility
+
+    def _on_auto_theme_toggled(self, switch, gparam):
+        """Handle auto-load theme toggle"""
+        is_active = switch.get_active()
+        self.settings["auto_load_theme"] = is_active
+        save_settings(self.settings)
+        
+        # Enable/disable theme combo based on auto-load setting
+        if hasattr(self, "combo_theme_settings"):
+            self.combo_theme_settings.set_sensitive(is_active)
+        
+        # If auto-load is disabled, clear manual override to use system theme
+        if not is_active:
+            self._manual_dark_mode = None
+            self._apply_gnome_style()
+            self._update_dark_toggle_icon()
+        
+        print(f"[DEBUG] Auto-load theme toggled: {is_active}")
 
     def _on_dark_toggle_clicked(self, btn):
         settings = Gtk.Settings.get_default()
@@ -1344,6 +1695,16 @@ class MainWindow(Gtk.Window):
         current = settings.get_property("gtk-application-prefer-dark-theme")
         self._manual_dark_mode = not current
         settings.set_property("gtk-application-prefer-dark-theme", self._manual_dark_mode)
+        
+        # Save theme preference to settings if auto-load is enabled
+        if self.settings.get("auto_load_theme", True):
+            if self._manual_dark_mode:
+                self.settings["preferred_theme"] = "dark"
+            else:
+                self.settings["preferred_theme"] = "light"
+            save_settings(self.settings)
+            print(f"[DEBUG] Saved theme preference: {self.settings['preferred_theme']}")
+        
         self._update_dark_toggle_icon()
 
     def _update_dark_toggle_icon(self):
@@ -1367,4 +1728,3 @@ def main():
 
 if __name__ == "__main__":
     main()
- # type: ignore
