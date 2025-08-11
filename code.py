@@ -355,8 +355,7 @@ class MainWindow(Gtk.Window):
 
         # Follow GNOME dark/light mode and style
         self._apply_gnome_style()
-        # Apply saved accent color (if any)
-        self._apply_accent_color(self.settings.get("accent_color", "blue"))
+        # Note: accent color will be applied after UI elements are created
 
         # Listen for theme changes to update accent if 'default' is selected
         settings = Gtk.Settings.get_default()
@@ -369,6 +368,9 @@ class MainWindow(Gtk.Window):
         GLib.idle_add(self._load_and_set_saved_model)
         # Ensure favorite button is updated after everything is initialized
         GLib.timeout_add(300, self._update_favorite_button)
+
+        # Apply saved accent color after all UI elements are created
+        self._apply_accent_color(self.settings.get("accent_color", "blue"))
 
         # Also populate display model with initial models if we have them
         if len(self.model_store_settings) > 0:
@@ -553,7 +555,7 @@ class MainWindow(Gtk.Window):
         
         notification.destroy()
 
-    def _heart_cell_data_func(self, column, cell, model, iter_, data):
+    def _heart_cell_data_func(self, column, cell, model, iter_, data=None):
         """Custom cell data function to show heart icon for favorites."""
         is_favorite = model[iter_][1]  # Second column is favorite status
         if is_favorite:
@@ -1036,6 +1038,13 @@ class MainWindow(Gtk.Window):
                     switch_ctx.remove_class(cls)
                 switch_ctx.add_class(f"accent-{resolved_color}")
 
+            # Apply to debug mode switch if it exists
+            if hasattr(self, "switch_debug_mode") and self.switch_debug_mode:
+                debug_switch_ctx = self.switch_debug_mode.get_style_context()
+                for cls in ["accent-blue", "accent-red", "accent-black", "accent-white", "accent-green"]:
+                    debug_switch_ctx.remove_class(cls)
+                debug_switch_ctx.add_class(f"accent-{resolved_color}")
+
             # Update active tab immediately
             self._update_stackswitcher_accent(self.stack, None)
         except Exception:
@@ -1167,15 +1176,6 @@ class MainWindow(Gtk.Window):
         self.btn_send.set_label("Send")
         self.btn_send.set_always_show_image(True)
         self.btn_send.get_style_context().add_class("suggested-action")
-        accent = self.settings.get("accent_color", "blue").lower()
-        resolved_accent = accent
-        if accent == "default":
-            settings = Gtk.Settings.get_default()
-            dark = settings.get_property("gtk-application-prefer-dark-theme")
-            resolved_accent = "white" if dark else "black"  # White on dark, black on light
-        for cls in ["accent-blue", "accent-red", "accent-black", "accent-white", "accent-green"]:
-            self.btn_send.get_style_context().remove_class(cls)
-        self.btn_send.get_style_context().add_class(f"accent-{resolved_accent}")
         self.btn_send.connect("clicked", self.on_send_clicked)
         input_row.pack_start(self.btn_send, False, False, 0)
 
@@ -1234,7 +1234,9 @@ class MainWindow(Gtk.Window):
         grid = Gtk.Grid(column_spacing=12, row_spacing=12, margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
 
         row = 0
+        # API key
         lbl_api = Gtk.Label(label="API Key:", xalign=0)
+        lbl_api.set_valign(Gtk.Align.CENTER)
         grid.attach(lbl_api, 0, row, 1, 1)
         self.entry_api = Gtk.Entry()
         self.entry_api.set_visibility(False)
@@ -1243,7 +1245,9 @@ class MainWindow(Gtk.Window):
         grid.attach(self.entry_api, 1, row, 2, 1)
         row += 1
 
+        # Base URL
         lbl_url = Gtk.Label(label="Base URL:", xalign=0)
+        lbl_url.set_valign(Gtk.Align.CENTER)
         grid.attach(lbl_url, 0, row, 1, 1)
         self.entry_url = Gtk.Entry()
         self.entry_url.set_placeholder_text("https://api.openai.com/ or http://localhost:11434/")
@@ -1251,8 +1255,9 @@ class MainWindow(Gtk.Window):
         grid.attach(self.entry_url, 1, row, 2, 1)
         row += 1
 
-        # System prompt field (now uses Gtk.Entry for GNOME look)
+        # System prompt (Entry)
         lbl_system = Gtk.Label(label="System Prompt:", xalign=0)
+        lbl_system.set_valign(Gtk.Align.CENTER)
         grid.attach(lbl_system, 0, row, 1, 1)
         self.entry_system = Gtk.Entry()
         self.entry_system.set_hexpand(True)
@@ -1263,19 +1268,24 @@ class MainWindow(Gtk.Window):
 
         # Model picker removed from settings tab
 
-        # Theme preference toggle
+        # Auto-load Theme switch (reference)
         lbl_auto_theme = Gtk.Label(label="Auto-load Theme:", xalign=0)
+        lbl_auto_theme.set_valign(Gtk.Align.CENTER)
+        lbl_auto_theme.set_halign(Gtk.Align.START)
         grid.attach(lbl_auto_theme, 0, row, 1, 1)
         self.switch_auto_theme = Gtk.Switch()
         self.switch_auto_theme.set_active(self.settings.get("auto_load_theme", True))
         self.switch_auto_theme.set_hexpand(False)
+        self.switch_auto_theme.set_vexpand(False)
+        self.switch_auto_theme.set_valign(Gtk.Align.CENTER)
         self.switch_auto_theme.set_halign(Gtk.Align.START)
         self.switch_auto_theme.connect("notify::active", self._on_auto_theme_toggled)
         grid.attach(self.switch_auto_theme, 1, row, 1, 1)
         row += 1
 
-        # Theme preference picker
+        # Preferred Theme combo
         lbl_theme = Gtk.Label(label="Preferred Theme:", xalign=0)
+        lbl_theme.set_valign(Gtk.Align.CENTER)
         grid.attach(lbl_theme, 0, row, 1, 1)
         self.theme_store_settings = Gtk.ListStore(str)
         for theme in ["auto", "light", "dark"]:
@@ -1285,7 +1295,6 @@ class MainWindow(Gtk.Window):
         self.combo_theme_settings.pack_start(renderer_theme, True)
         self.combo_theme_settings.add_attribute(renderer_theme, "text", 0)
         grid.attach(self.combo_theme_settings, 1, row, 1, 1)
-        # Restore saved theme
         saved_theme = self.settings.get("preferred_theme", "auto")
         def set_active_theme_in_combo(combo, store, theme):
             idx = 0
@@ -1299,7 +1308,6 @@ class MainWindow(Gtk.Window):
             if not found:
                 combo.set_active(0)
         set_active_theme_in_combo(self.combo_theme_settings, self.theme_store_settings, saved_theme)
-        # React on change: immediately apply theme and persist
         def on_theme_changed(combo):
             idx = combo.get_active()
             if idx is None or idx < 0:
@@ -1310,18 +1318,17 @@ class MainWindow(Gtk.Window):
                 selected = "auto"
             self.settings["preferred_theme"] = selected
             save_settings(self.settings)
-            # Reset manual override and apply new theme
             self._manual_dark_mode = None
             self._apply_gnome_style()
             self._update_dark_toggle_icon()
             print(f"[DEBUG] Theme preference changed to: {selected}")
         self.combo_theme_settings.connect("changed", on_theme_changed)
-        # Enable/disable theme combo based on auto-load setting
         self.combo_theme_settings.set_sensitive(self.settings.get("auto_load_theme", True))
         row += 1
 
-        # Accent color picker (simple combo)
+        # Accent color combo
         lbl_color = Gtk.Label(label="Accent Color:", xalign=0)
+        lbl_color.set_valign(Gtk.Align.CENTER)
         grid.attach(lbl_color, 0, row, 1, 1)
         self.color_store_settings = Gtk.ListStore(str)
         for color in ["blue", "red", "green", "default"]:
@@ -1331,7 +1338,6 @@ class MainWindow(Gtk.Window):
         self.combo_color_settings.pack_start(renderer_text, True)
         self.combo_color_settings.add_attribute(renderer_text, "text", 0)
         grid.attach(self.combo_color_settings, 1, row, 1, 1)
-        # Restore saved color
         saved_color = self.settings.get("accent_color", "blue")
         def set_active_color_in_combo(combo, store, color):
             idx = 0
@@ -1345,7 +1351,6 @@ class MainWindow(Gtk.Window):
             if not found:
                 combo.set_active(0)
         set_active_color_in_combo(self.combo_color_settings, self.color_store_settings, saved_color)
-        # React on change: immediately apply accent and persist
         def on_color_changed(combo):
             idx = combo.get_active()
             if idx is None or idx < 0:
@@ -1360,22 +1365,26 @@ class MainWindow(Gtk.Window):
         self.combo_color_settings.connect("changed", on_color_changed)
         row += 1
 
-        # Debug mode toggle
+        # Debug Mode switch (match auto-load switch exactly)
         lbl_debug = Gtk.Label(label="Debug Mode:", xalign=0)
+        lbl_debug.set_valign(Gtk.Align.CENTER)
+        lbl_debug.set_halign(Gtk.Align.START)
         grid.attach(lbl_debug, 0, row, 1, 1)
         self.switch_debug_mode = Gtk.Switch()
         self.switch_debug_mode.set_active(self.settings.get("debug_mode", False))
         self.switch_debug_mode.set_hexpand(False)
+        self.switch_debug_mode.set_vexpand(False)
+        self.switch_debug_mode.set_valign(Gtk.Align.CENTER)
         self.switch_debug_mode.set_halign(Gtk.Align.START)
         self.switch_debug_mode.connect("notify::active", self._on_debug_mode_toggled)
         grid.attach(self.switch_debug_mode, 1, row, 1, 1)
 
+        # Actions row
+        row += 1
         btn_save = Gtk.Button(label="Save Settings")
+        btn_save.set_halign(Gtk.Align.END)
         btn_save.connect("clicked", self.on_save_clicked)
-        grid.attach(btn_save, 2, row, 1, 1)
-
-        # Mirror model list to main combo when invoked from settings
-        # Model picker removed from settings tab
+        grid.attach(btn_save, 0, row, 3, 1)
 
         return grid
 
@@ -1416,9 +1425,9 @@ class MainWindow(Gtk.Window):
         api_key = self.entry_api.get_text().strip() if hasattr(self, "entry_api") else ""
         base_url = self.entry_url.get_text().strip() if hasattr(self, "entry_url") else ""
         system_prompt = ""
-        if hasattr(self, "entry_system_buffer") and self.entry_system_buffer:
-            start, end = self.entry_system_buffer.get_bounds()
-            system_prompt = self.entry_system_buffer.get_text(start, end, True).strip()
+        # Read system prompt from Entry widget
+        if hasattr(self, "entry_system") and self.entry_system:
+            system_prompt = self.entry_system.get_text().strip()
         default_model = ""
         if hasattr(self, "combo_model_settings") and self.combo_model_settings:
             entry = self.combo_model_settings.get_child()
